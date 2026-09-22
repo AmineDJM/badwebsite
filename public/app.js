@@ -89,50 +89,28 @@ const coverageSelect = document.getElementById('coverage');
 const spacingInput = document.getElementById('spacing');
 const estimateBox = document.getElementById('estimate');
 
-// Offsets a centre point into a k×k grid. 1° of latitude is ~111.32 km
-// everywhere; longitude degrees shrink with the cosine of the latitude.
-function gridPoints(lat, lon, k, spacingKm) {
-  const centreLat = parseFloat(lat);
-  const centreLon = parseFloat(lon);
-  if (!Number.isFinite(centreLat) || !Number.isFinite(centreLon)) return [];
-  if (k <= 1) return [{ lat, lon }];
-
-  const dLat = spacingKm / 111.32;
-  const dLon = spacingKm / (111.32 * Math.cos((centreLat * Math.PI) / 180) || 1);
-  const half = (k - 1) / 2;
-  const points = [];
-  for (let i = -half; i <= half; i++) {
-    for (let j = -half; j <= half; j++) {
-      points.push({
-        lat: (centreLat + i * dLat).toFixed(6),
-        lon: (centreLon + j * dLon).toFixed(6),
-      });
-    }
-  }
-  return points;
-}
-
 function plannedJobCount() {
   const lines = keywordsInput.value.split('\n').map((l) => l.trim()).filter(Boolean).length;
-  const k = parseInt(coverageSelect.value, 10) || 1;
-  const hasZone = latInput.value && lonInput.value;
-  const points = hasZone ? k * k : 1;
+  const tuning = { rapide: 5, normale: 21, maximale: 85 }[coverageSelect.value] || 21;
   const searches = mode === 'single' ? 1 : Math.max(lines, 1);
-  return { jobs: searches * points, points, searches, lines };
+  return { maxJobs: searches * tuning, searches, lines };
 }
 
 function renderEstimate() {
-  const { jobs, points, lines } = plannedJobCount();
+  const { maxJobs, lines } = plannedJobCount();
   if (!lines) {
     estimateBox.textContent = '';
     return;
   }
-  const minutes = Math.round((jobs * 2.5) / 5) * 5; // jobs run one at a time
-  const hours = minutes >= 60 ? ` (~${(minutes / 60).toFixed(1)} h)` : ` (~${minutes} min)`;
+  if (!latInput.value || !lonInput.value) {
+    estimateBox.textContent = "Choisissez une zone de recherche pour activer l'exploration adaptative.";
+    return;
+  }
+  const minutes = Math.round((maxJobs * 2.5) / 5) * 5;
+  const duration = minutes >= 60 ? `~${(minutes / 60).toFixed(1)} h` : `~${minutes} min`;
   estimateBox.textContent =
-    `${jobs} job${jobs > 1 ? 's' : ''} seront créés` +
-    (points > 1 ? ` — ${points} points de recherche` : '') +
-    `${hours}, exécutés un par un.`;
+    `Jusqu'à ${maxJobs} recherche${maxJobs > 1 ? 's' : ''} (${duration} au maximum) — ` +
+    `le scraper s'arrêtera avant si la zone est couverte.`;
 }
 
 for (const el of [coverageSelect, spacingInput, keywordsInput, citySelect]) {
@@ -224,32 +202,29 @@ form.addEventListener('submit', async (ev) => {
   statusLog.innerHTML = '';
 
   try {
-    const k = parseInt(coverageSelect.value, 10) || 1;
-    const spacing = parseFloat(spacingInput.value) || 2;
-    const points =
-      base.lat && base.lon ? gridPoints(base.lat, base.lon, k, spacing) : [{ lat: base.lat, lon: base.lon }];
+    const searches = mode === 'single'
+      ? [{ keywords: lines }]
+      : lines.map((l) => ({ keywords: [l] }));
 
-    const searches = mode === 'single' ? [{ label: name, keywords: lines }] : lines.map((l) => ({ label: `${name} — ${l}`, keywords: [l] }));
-
-    const items = [];
-    for (const search of searches) {
-      points.forEach((pt, i) => {
-        items.push({
-          ...base,
-          lat: pt.lat,
-          lon: pt.lon,
-          name: points.length > 1 ? `${search.label} [${i + 1}/${points.length}]` : search.label,
-          keywords: search.keywords,
-        });
+    // With a zone, the server explores adaptively and decides how many
+    // searches are actually worth running; without one it can only do the
+    // single unanchored search the user asked for.
+    if (base.lat && base.lon) {
+      const res = await fetch('/api/campaign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: name, searches, base, intensity: coverageSelect.value, spacingKm: parseFloat(spacingInput.value) || 8 }),
       });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.message || `HTTP ${res.status}`);
+      (body.created || []).forEach((c) => logLine(`✓ exploration lancée : ${c.label} (jusqu'à ${c.maxJobs} recherches)`, 'ok'));
+      logLine("le scraper découpe les zones denses et s'arrête quand la zone est couverte.", 'ok');
+      refresh();
+      return;
     }
 
-    logLine(
-      `→ mise en file d'attente de ${items.length} job${items.length > 1 ? 's' : ''}` +
-        (points.length > 1 ? ` (${points.length} points de recherche)` : '') +
-        '…'
-    );
-
+    const items = searches.map((sr) => ({ ...base, name, keywords: sr.keywords }));
+    logLine(`→ mise en file d'attente de ${items.length} job(s)…`);
     const result = await submitQueueItems(items);
     (result.created || []).forEach((c, i) => logLine(`✓ (${i + 1}/${items.length}) en file: ${c.name}`, 'ok'));
     if (result.warning) logLine(`⚠ ${result.warning}`, 'err');
@@ -298,7 +273,8 @@ function queueItemStatus(item) {
     return { cls: 'pending', label: `en attente${item.queuePosition ? ` · ${item.queuePosition}` : ''}` };
   }
   if (item.status === 'submitted') {
-    return { cls: 'working', label: item.engineStatus === 'working' ? 'en cours' : 'démarrage' };
+    const live = typeof item.liveCount === 'number' && item.liveCount > 0 ? ` · ${item.liveCount} trouvées` : '';
+    return { cls: 'working', label: (item.engineStatus === 'working' ? 'en cours' : 'démarrage') + live };
   }
   if (item.status === 'ok') return { cls: 'ok', label: 'terminé' };
   return { cls: 'failed', label: 'échoué' };
@@ -454,6 +430,48 @@ proxyTestBtn.addEventListener('click', async () => {
   }
 });
 
+const filterIds = ['f-website', 'f-phone', 'f-email', 'f-rating', 'f-reviews'];
+
+function exportUrl() {
+  const p = new URLSearchParams();
+  const website = document.getElementById('f-website').value;
+  if (website) p.set('website', website);
+  if (document.getElementById('f-phone').checked) p.set('phone', 'yes');
+  if (document.getElementById('f-email').checked) p.set('email', 'yes');
+  const rating = document.getElementById('f-rating').value;
+  if (rating) p.set('max_rating', rating);
+  const reviews = document.getElementById('f-reviews').value;
+  if (reviews) p.set('min_reviews', reviews);
+  const qs = p.toString();
+  return '/api/export/merged' + (qs ? '?' + qs : '');
+}
+
+for (const id of filterIds) {
+  document.getElementById(id).addEventListener('change', () => {
+    document.getElementById('export-btn').href = exportUrl();
+  });
+}
+
+function renderCampaigns(list) {
+  const box = document.getElementById('campaign-box');
+  if (!list || list.length === 0) {
+    box.innerHTML = '';
+    return;
+  }
+  box.innerHTML = list
+    .map((c) => {
+      const state = c.stopped
+        ? `<span class="c-done">terminée</span> — ${escapeHtml(c.stopReason || '')}`
+        : `<span class="c-run">en cours</span> — ${c.jobsDone}/${c.jobsCreated} recherches`;
+      return `<div class="campaign-row">
+        <strong>${escapeHtml(c.label)}</strong>
+        <span class="c-count">${c.totalUnique} fiches uniques</span>
+        <span class="c-state">${state}</span>
+      </div>`;
+    })
+    .join('');
+}
+
 async function refresh() {
   let queueItems = [];
   let engineJobs = [];
@@ -465,6 +483,7 @@ async function refresh() {
     queueItems = data.items || [];
     renderAlert(data.breaker);
     renderProxyState(data.config);
+    renderCampaigns(data.campaigns);
   } catch (err) {
     jobsContainer.innerHTML = `<div class="empty">Impossible de contacter le serveur (${escapeHtml(err.message)})</div>`;
     return;

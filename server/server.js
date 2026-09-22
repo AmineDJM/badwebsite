@@ -299,10 +299,28 @@ async function engineDeleteJob(id) {
 // ---------------------------------------------------------------------------
 
 let queue = [];
+let campaigns = {};
 let breaker = { consecutiveFailures: 0, paused: false, pausedAt: null, pauseReason: null };
 let proxyCursor = 0;
 let lastFinishedAt = null;
 let dispatching = false;
+
+// Google stops feeding a search at ~20 results, so a search coming back at or
+// near that number means the area still holds more and deserves to be split;
+// one returning far fewer has been exhausted and splitting it would just buy
+// duplicates. That asymmetry is what makes an adaptive grid cheaper than a
+// fixed one: dense centres subdivide, empty outskirts are never revisited.
+const SATURATION_THRESHOLD = intEnv('GRID_SATURATION', 18, 1);
+// Once a campaign's recent jobs stop turning up businesses it hasn't already
+// seen, the area is covered and the rest of the grid is money for nothing.
+const YIELD_WINDOW = intEnv('GRID_YIELD_WINDOW', 5, 2);
+const YIELD_MIN_RATIO = 0.08;
+
+const INTENSITY = {
+  rapide: { maxDepth: 1, maxJobs: 5 },
+  normale: { maxDepth: 2, maxJobs: 21 },
+  maximale: { maxDepth: 3, maxJobs: 85 },
+};
 
 function loadQueue() {
   try {
@@ -312,6 +330,7 @@ function loadQueue() {
       queue = parsed;
     } else {
       queue = parsed.queue || [];
+      campaigns = parsed.campaigns || {};
       breaker = { ...breaker, ...(parsed.breaker || {}) };
       proxyCursor = parsed.proxyCursor || 0;
     }
@@ -327,7 +346,10 @@ function loadQueue() {
 function persistQueue() {
   try {
     fs.mkdirSync(DATA_FOLDER, { recursive: true });
-    fs.writeFileSync(QUEUE_FILE, JSON.stringify({ version: 2, queue, breaker, proxyCursor }, null, 2));
+    fs.writeFileSync(
+      QUEUE_FILE,
+      JSON.stringify({ version: 3, queue, campaigns, breaker, proxyCursor }, null, 2)
+    );
   } catch (err) {
     console.error('[queue] failed to persist queue.json:', err.message);
   }
@@ -344,6 +366,8 @@ function publicQueueView() {
       engineStatus: item.engineStatus || null,
       engineJobId: item.engineJobId,
       resultCount: typeof item.resultCount === 'number' ? item.resultCount : null,
+      liveCount: typeof item.liveCount === 'number' ? item.liveCount : null,
+      campaignId: item.campaignId || null,
       attempts: item.attempts || 0,
       maxAttempts: JOB_MAX_ATTEMPTS,
       nextAttemptAt: item.nextAttemptAt || null,
@@ -458,6 +482,137 @@ function registerSuccess() {
   breaker.consecutiveFailures = 0;
 }
 
+// ---------------------------------------------------------------------------
+// adaptive grid campaigns
+// ---------------------------------------------------------------------------
+
+function placeIdsFrom(csvText) {
+  const rows = parseCsv(csvText);
+  if (rows.length < 2) return [];
+  const idIdx = rows[0].indexOf('place_id');
+  const linkIdx = rows[0].indexOf('link');
+  const ids = [];
+  for (const row of rows.slice(1)) {
+    const key = (idIdx !== -1 && row[idIdx]) || (linkIdx !== -1 && row[linkIdx]) || '';
+    if (key) ids.push(key);
+  }
+  return ids;
+}
+
+function offsetPoint(lat, lon, dLatKm, dLonKm) {
+  const latNum = parseFloat(lat);
+  const lonNum = parseFloat(lon);
+  const dLat = dLatKm / 111.32;
+  const dLon = dLonKm / (111.32 * Math.cos((latNum * Math.PI) / 180) || 1);
+  return { lat: (latNum + dLat).toFixed(6), lon: (lonNum + dLon).toFixed(6) };
+}
+
+function campaignQueuedItems(campaignId) {
+  return queue.filter((q) => q.campaignId === campaignId && q.status === 'queued');
+}
+
+function stopCampaign(campaign, reason) {
+  if (campaign.stopped) return;
+  campaign.stopped = true;
+  campaign.stopReason = reason;
+  const dropped = campaignQueuedItems(campaign.id);
+  for (const item of dropped) {
+    const idx = queue.indexOf(item);
+    if (idx !== -1) queue.splice(idx, 1);
+  }
+  console.log(`[campaign] "${campaign.label}" stopped: ${reason} (${dropped.length} job(s) annulé(s))`);
+}
+
+// Splits a saturated search point into four, each covering a quarter of its
+// area, and queues them right behind the point they came from.
+function subdivide(campaign, item) {
+  const half = item.spacingKm / 2;
+  const quarter = half / 2;
+  const children = [
+    offsetPoint(item.payload.lat, item.payload.lon, quarter, quarter),
+    offsetPoint(item.payload.lat, item.payload.lon, quarter, -quarter),
+    offsetPoint(item.payload.lat, item.payload.lon, -quarter, quarter),
+    offsetPoint(item.payload.lat, item.payload.lon, -quarter, -quarter),
+  ];
+
+  const created = [];
+  for (const pt of children) {
+    if (campaign.jobsCreated >= campaign.maxJobs) break;
+    campaign.jobsCreated += 1;
+    created.push({
+      id: crypto.randomUUID(),
+      name: `${campaign.label} [${campaign.jobsCreated}]`,
+      payload: { ...item.payload, lat: pt.lat, lon: pt.lon },
+      campaignId: campaign.id,
+      depth: item.depth + 1,
+      spacingKm: half,
+      status: 'queued',
+      engineJobId: null,
+      error: null,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  // Insert after the current item so a dense area is explored depth-first,
+  // rather than after every other pending point.
+  const at = queue.indexOf(item) + 1;
+  queue.splice(at, 0, ...created);
+  console.log(`[campaign] "${campaign.label}": zone saturée → ${created.length} sous-zone(s) ajoutée(s)`);
+}
+
+function onCampaignJobDone(item, csvText) {
+  const campaign = campaigns[item.campaignId];
+  if (!campaign) return;
+
+  const ids = placeIdsFrom(csvText);
+  const seen = new Set(campaign.seen || []);
+  let fresh = 0;
+  for (const id of ids) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      fresh++;
+    }
+  }
+  campaign.seen = [...seen];
+  campaign.jobsDone = (campaign.jobsDone || 0) + 1;
+  campaign.recentYield = [...(campaign.recentYield || []), ids.length ? fresh / ids.length : 0].slice(-YIELD_WINDOW);
+  campaign.totalUnique = seen.size;
+
+  if (campaign.stopped) return;
+
+  if (campaign.jobsCreated >= campaign.maxJobs) {
+    stopCampaign(campaign, `plafond de ${campaign.maxJobs} recherches atteint`);
+    return;
+  }
+
+  // Everything coming back is already known: the area is covered.
+  if (campaign.recentYield.length >= YIELD_WINDOW) {
+    const avg = campaign.recentYield.reduce((a, b) => a + b, 0) / campaign.recentYield.length;
+    if (avg < YIELD_MIN_RATIO) {
+      stopCampaign(
+        campaign,
+        `plus que ${Math.round(avg * 100)}% de fiches inédites sur les ${YIELD_WINDOW} dernières recherches — zone couverte`
+      );
+      return;
+    }
+  }
+
+  if (ids.length >= SATURATION_THRESHOLD && item.depth < campaign.maxDepth) {
+    subdivide(campaign, item);
+  }
+
+  // Nothing saturated and nothing left queued: every zone came back exhausted,
+  // so the campaign is finished rather than merely idle.
+  const stillRunning = queue.some(
+    (q) => q.campaignId === campaign.id && (q.status === 'queued' || q.status === 'submitted')
+  );
+  if (!stillRunning) {
+    campaign.stopped = true;
+    campaign.stopReason = 'exploration terminée — toutes les zones sont épuisées';
+    console.log(`[campaign] "${campaign.label}" terminée : ${campaign.totalUnique} fiches uniques`);
+  }
+}
+
 function forcePause(reason) {
   if (breaker.paused) return;
   breaker.paused = true;
@@ -543,17 +698,28 @@ async function resolveCurrent(item) {
       persistQueue();
       return;
     }
+    // The writer flushes each result as it lands, so the partial file is a
+    // live progress counter rather than something to wait for.
+    try {
+      const { rows } = await engineAnalyzeResults(item.engineJobId);
+      item.liveCount = rows;
+    } catch {
+      // progress is a nicety; never let it disturb the job
+    }
     persistQueue();
     return; // still pending/working
   }
 
   let count = null;
   let quality = null;
+  let csvText = '';
   try {
     ({ rows: count, quality } = await engineAnalyzeResults(item.engineJobId));
+    if (item.campaignId) csvText = await engineDownloadCsv(item.engineJobId);
   } catch (err) {
     console.error('[queue] could not read results for', item.engineJobId, err.message);
   }
+  item.liveCount = null;
   item.resultCount = count;
   lastFinishedAt = Date.now();
 
@@ -578,6 +744,7 @@ async function resolveCurrent(item) {
     item.nextAttemptAt = null;
     registerSuccess();
     console.log(`[queue] "${item.name}" finished with ${count === null ? '?' : count} result(s)`);
+    if (item.campaignId && csvText) onCampaignJobDone(item, csvText);
   } else {
     scheduleRetryOrFail(
       item,
@@ -738,8 +905,11 @@ async function dispatchTick() {
     }
 
     // Breathing room between jobs: back-to-back hammering is what gets an IP
-    // flagged in the first place.
-    if (lastFinishedAt && Date.now() - lastFinishedAt < JOB_DELAY_MS) return;
+    // flagged. When each job already leaves from a fresh exit IP, most of that
+    // pause is buying nothing, so it is cut down rather than paid in full.
+    const rotating = proxyPool().some((p) => p.includes('{session}')) || proxyPool().length > 1;
+    const effectiveDelay = rotating ? Math.min(JOB_DELAY_MS, 5000) : JOB_DELAY_MS;
+    if (lastFinishedAt && Date.now() - lastFinishedAt < effectiveDelay) return;
 
     const now = Date.now();
     const next = queue.find(
@@ -802,6 +972,16 @@ async function handleQueueList(req, res) {
       consecutiveFailures: breaker.consecutiveFailures,
       threshold: BLOCK_PAUSE_THRESHOLD,
     },
+    campaigns: Object.values(campaigns).map((c) => ({
+      id: c.id,
+      label: c.label,
+      jobsDone: c.jobsDone || 0,
+      jobsCreated: c.jobsCreated || 0,
+      maxJobs: c.maxJobs,
+      totalUnique: c.totalUnique || 0,
+      stopped: !!c.stopped,
+      stopReason: c.stopReason || null,
+    })),
     config: {
       maxAttempts: JOB_MAX_ATTEMPTS,
       jobDelaySeconds: JOB_DELAY_MS / 1000,
@@ -828,6 +1008,15 @@ async function handleMergedExport(req, res) {
     return;
   }
 
+  // Prospecting filters: a raw dump is rarely the list you actually work from.
+  const params = new URLSearchParams((req.url.split('?')[1] || ''));
+  const wantNoWebsite = params.get('website') === 'none';
+  const wantWebsite = params.get('website') === 'yes';
+  const wantPhone = params.get('phone') === 'yes';
+  const wantEmail = params.get('email') === 'yes';
+  const maxRating = parseFloat(params.get('max_rating'));
+  const minReviews = parseInt(params.get('min_reviews'), 10);
+
   let header = null;
   const seen = new Set();
   const merged = [];
@@ -845,10 +1034,32 @@ async function handleMergedExport(req, res) {
 
     const idIdx = rows[0].indexOf('place_id');
     const linkIdx = rows[0].indexOf('link');
+    const col = (name) => rows[0].indexOf(name);
+    const websiteIdx = col('website');
+    const phoneIdx = col('phone');
+    const emailsIdx = col('emails');
+    const ratingIdx = col('review_rating');
+    const reviewsIdx = col('review_count');
+    const get = (row, i) => (i !== -1 && row[i] ? String(row[i]).trim() : '');
+
     for (const row of rows.slice(1)) {
       if (row.length < 2) continue;
       const key = (idIdx !== -1 && row[idIdx]) || (linkIdx !== -1 && row[linkIdx]) || row.join('|');
       if (seen.has(key)) continue;
+
+      if (wantNoWebsite && get(row, websiteIdx)) continue;
+      if (wantWebsite && !get(row, websiteIdx)) continue;
+      if (wantPhone && !get(row, phoneIdx)) continue;
+      if (wantEmail && !get(row, emailsIdx)) continue;
+      if (Number.isFinite(maxRating)) {
+        const r = parseFloat(get(row, ratingIdx));
+        if (!Number.isFinite(r) || r > maxRating) continue;
+      }
+      if (Number.isFinite(minReviews)) {
+        const n = parseInt(get(row, reviewsIdx), 10);
+        if (!Number.isFinite(n) || n < minReviews) continue;
+      }
+
       seen.add(key);
       merged.push(row);
     }
@@ -1000,6 +1211,88 @@ async function handleQueueCreate(req, res) {
   dispatchTick();
 }
 
+async function handleCampaignCreate(req, res) {
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return sendJSON(res, 400, { message: err.message });
+  }
+
+  const label = String(body.label || '').trim();
+  const searches = Array.isArray(body.searches) ? body.searches : [];
+  const base = body.base || {};
+  const tuning = INTENSITY[body.intensity] || INTENSITY.normale;
+  const spacingKm = Math.max(0.5, parseFloat(body.spacingKm) || 8);
+
+  if (!label || searches.length === 0) {
+    return sendJSON(res, 422, { message: 'label et recherches requis' });
+  }
+  if (!base.lat || !base.lon) {
+    return sendJSON(res, 422, { message: 'une zone de recherche est requise pour le mode adaptatif' });
+  }
+
+  const created = [];
+  for (const search of searches) {
+    const keywords = Array.isArray(search.keywords) ? search.keywords.filter(Boolean) : [];
+    if (keywords.length === 0) continue;
+
+    const campaignLabel = searches.length > 1 ? `${label} — ${keywords[0]}` : label;
+    const campaign = {
+      id: crypto.randomUUID(),
+      label: campaignLabel,
+      maxDepth: tuning.maxDepth,
+      maxJobs: tuning.maxJobs,
+      jobsCreated: 1,
+      jobsDone: 0,
+      seen: [],
+      recentYield: [],
+      totalUnique: 0,
+      stopped: false,
+      stopReason: null,
+      createdAt: new Date().toISOString(),
+    };
+    campaigns[campaign.id] = campaign;
+
+    const { valid: proxies } = validateProxies(
+      Array.isArray(base.proxies) ? base.proxies : [],
+      `campagne "${campaignLabel}"`
+    );
+
+    queue.push({
+      id: crypto.randomUUID(),
+      name: `${campaignLabel} [1]`,
+      payload: {
+        name: campaignLabel,
+        keywords,
+        lang: String(base.lang || 'en').slice(0, 2),
+        zoom: Number.isFinite(base.zoom) ? base.zoom : 15,
+        lat: String(base.lat),
+        lon: String(base.lon),
+        fast_mode: !!base.fast_mode,
+        radius: Number.isFinite(base.radius) ? base.radius : 10000,
+        depth: Number.isFinite(base.depth) ? base.depth : 10,
+        email: !!base.email,
+        extra_reviews: !!base.extra_reviews,
+        max_time: Number.isFinite(base.max_time) ? base.max_time : 1200,
+        proxies,
+      },
+      campaignId: campaign.id,
+      depth: 0,
+      spacingKm,
+      status: 'queued',
+      engineJobId: null,
+      error: null,
+      createdAt: new Date().toISOString(),
+    });
+    created.push({ id: campaign.id, label: campaignLabel, maxJobs: tuning.maxJobs });
+  }
+
+  persistQueue();
+  sendJSON(res, 201, { created });
+  dispatchTick();
+}
+
 async function handleQueueDelete(req, res, id) {
   const idx = queue.findIndex((q) => q.id === id);
   if (idx === -1) return sendJSON(res, 404, { message: 'introuvable' });
@@ -1098,6 +1391,11 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/api/queue/resume') {
     if (req.method === 'POST') return void handleQueueResume(req, res);
+    return sendJSON(res, 405, { message: 'method not allowed' });
+  }
+
+  if (pathname === '/api/campaign') {
+    if (req.method === 'POST') return void handleCampaignCreate(req, res);
     return sendJSON(res, 405, { message: 'method not allowed' });
   }
 

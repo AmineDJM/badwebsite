@@ -234,6 +234,38 @@ catégories les plus denses qui soient — donne 20 résultats en profondeur 5
 comme en profondeur 20. Le moteur fait défiler la liste, attend 2 secondes, et
 s'arrête dès qu'elle ne grandit plus ; ce délai est codé en dur.
 
+### Exploration adaptative
+
+Plutôt qu'un quadrillage fixe deviné à l'avance (qui gaspille des recherches
+en périphérie et en manque au centre), le scraper **s'adapte à la densité
+réelle** :
+
+1. Il lance une recherche au centre de la zone.
+2. Si elle **sature** (≈20 résultats, donc Google en cache d'autres), la zone
+   est découpée en 4 sous-zones, explorées à leur tour.
+3. Si elle ramène peu, la zone est considérée comme épuisée : **aucune
+   sous-zone n'est créée**, et vous ne payez pas de proxy pour du vide.
+4. Dès que les dernières recherches ne ramènent plus que des fiches déjà vues
+   (moins de 8 % d'inédits sur 5 recherches), la campagne **s'arrête seule**.
+
+| Intensité | Recherches max | Ordre de grandeur |
+|---|---|---|
+| Rapide | 5 | ~100 fiches |
+| Normale | 21 | ~400 fiches |
+| Maximale | 85 | ~1 500 fiches |
+
+Ce sont des **plafonds**, pas des objectifs : une zone peu dense s'arrêtera
+bien avant. L'avancement de chaque campagne (recherches faites, fiches uniques,
+raison de l'arrêt) s'affiche en haut de la liste des jobs, et le nombre de
+fiches trouvées apparaît en direct pendant qu'une recherche tourne.
+
+### Filtrer l'export
+
+Sous la liste des jobs, l'export fusionné peut être restreint avant
+téléchargement : **sans site web** (le cas typique en prospection), avec
+téléphone, avec email, note maximale, nombre d'avis minimum. Le CSV obtenu est
+directement exploitable, sans tri manuel dans Excel.
+
 **Deux conséquences pratiques :**
 
 1. **Toujours définir une zone de recherche.** Sans coordonnées, le moteur
