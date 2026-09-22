@@ -33,12 +33,12 @@
 
       <div class="row">
         <div>
-          <label for="lang">Langue</label>
+          <label for="lang">Langue <span title="Le moteur ne sait refuser le bandeau de consentement Google qu'en anglais et en allemand. En fr/es/it/nl, si le bandeau apparaît, le job peut revenir vide. Les établissements trouvés sont les mêmes ; seules les catégories changent de langue.">&#9432;</span></label>
           <select id="lang">
-            <option value="fr" selected>fr</option>
-            <option value="en">en</option>
-            <option value="es">es</option>
+            <option value="en" selected>en (recommandé)</option>
             <option value="de">de</option>
+            <option value="fr">fr</option>
+            <option value="es">es</option>
             <option value="it">it</option>
             <option value="pt">pt</option>
             <option value="nl">nl</option>
@@ -114,23 +114,19 @@
     </form>
   </section>
 
-  <section class="panel" id="queue-panel" style="display:none">
-    <div class="jobs-header">
-      <h2>File d'attente</h2>
-      <span class="refresh-hint">exécution en série, dans l'ordre</span>
-    </div>
-    <div id="queue-container"></div>
-  </section>
+  <div class="right-col">
+    <div id="alert-container"></div>
 
-  <section class="panel">
-    <div class="jobs-header">
-      <h2>Jobs</h2>
-      <span class="refresh-hint" id="refresh-hint">actualisation auto…</span>
-    </div>
-    <div id="jobs-container">
-      <div class="empty">Chargement…</div>
-    </div>
-  </section>
+    <section class="panel">
+      <div class="jobs-header">
+        <h2>Jobs</h2>
+        <span class="refresh-hint" id="refresh-hint">exécution en série · actualisation auto</span>
+      </div>
+      <div id="jobs-container">
+        <div class="empty">Chargement…</div>
+      </div>
+    </section>
+  </div>
 </main>
 
 <footer>

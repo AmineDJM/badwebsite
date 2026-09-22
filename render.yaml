@@ -39,6 +39,17 @@ services:
                      # recommended provider. Best used as ONE rotating-gateway URL
                      # (protocol://user:pass@host:port); every job that doesn't
                      # specify its own proxies uses this automatically.
+      - key: JOB_MAX_ATTEMPTS
+        value: "3" # a job that comes back with 0 results is retried this many
+                    # times before being marked failed
+      - key: JOB_RETRY_DELAY_MINUTES
+        value: "5" # attempt n waits n × this; a block doesn't clear in seconds
+      - key: BLOCK_PAUSE_THRESHOLD
+        value: "3" # after this many consecutive jobs with no usable result, the
+                    # whole queue pauses instead of burning the rest for nothing
+      - key: JOB_DELAY_SECONDS
+        value: "30" # breathing room between jobs — back-to-back hammering is
+                     # what gets an IP flagged
       - key: SCRAPER_BROWSER_POOL_SIZE
         value: "0" # advanced, only relevant if DEFAULT_PROXIES/per-job proxies
                     # lists several *individual* static proxy IPs instead of one

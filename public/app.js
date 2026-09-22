@@ -7,8 +7,6 @@ const PREVIEW_ROWS = 50;
 const HIGHLIGHT_COLS = new Set(['website', 'emails', 'phone']);
 
 let mode = 'single'; // 'single' | 'batch'
-let jobsCache = [];
-let pollTimer = null;
 
 // ---------- mode toggle ----------
 
@@ -128,8 +126,7 @@ form.addEventListener('submit', async (ev) => {
     if (result.warning) logLine(`⚠ ${result.warning}`, 'err');
     logLine("terminé — les jobs s'exécuteront automatiquement un par un, dans l'ordre.", 'ok');
 
-    fetchQueue();
-    fetchJobs();
+    refresh();
   } catch (err) {
     logLine(`✗ ${err.message}`, 'err');
   } finally {
@@ -137,13 +134,15 @@ form.addEventListener('submit', async (ev) => {
   }
 });
 
-// ---------- jobs list ----------
+// ---------- jobs list (queue items + any job created outside the queue) ----------
 
 const jobsContainer = document.getElementById('jobs-container');
+const alertContainer = document.getElementById('alert-container');
 
-function statusLabel(status) {
-  const map = { pending: 'en attente', working: 'en cours', ok: 'terminé', failed: 'échoué' };
-  return map[status] || status;
+function escapeHtml(str) {
+  return String(str ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
 }
 
 function fmtDate(iso) {
@@ -154,122 +153,174 @@ function fmtDate(iso) {
   }
 }
 
-function renderJobs(jobs) {
-  if (!jobs || jobs.length === 0) {
+function minutesUntil(iso) {
+  const ms = Date.parse(iso) - Date.now();
+  return ms <= 0 ? 0 : Math.ceil(ms / 60000);
+}
+
+// Maps a queue item onto a badge. The engine reports "ok" even when it
+// scraped nothing, so the server re-checks the result file — that's why a
+// job can be retried despite the engine calling it a success.
+function queueItemStatus(item) {
+  if (item.status === 'queued') {
+    if (item.nextAttemptAt && minutesUntil(item.nextAttemptAt) > 0) {
+      return { cls: 'retry', label: `reprise dans ${minutesUntil(item.nextAttemptAt)} min` };
+    }
+    return { cls: 'pending', label: `en attente${item.queuePosition ? ` · ${item.queuePosition}` : ''}` };
+  }
+  if (item.status === 'submitted') {
+    return { cls: 'working', label: item.engineStatus === 'working' ? 'en cours' : 'démarrage' };
+  }
+  if (item.status === 'ok') return { cls: 'ok', label: 'terminé' };
+  return { cls: 'failed', label: 'échoué' };
+}
+
+function rowHtml({ name, badge, results, attempts, keywords, date, actions, note }) {
+  const kwPreview = keywords.slice(0, 2).join(', ') + (keywords.length > 2 ? ` +${keywords.length - 2}` : '');
+  return `<tr>
+    <td>
+      ${escapeHtml(name)}
+      ${note ? `<div class="row-note">${escapeHtml(note)}</div>` : ''}
+    </td>
+    <td><span class="badge ${badge.cls}">${escapeHtml(badge.label)}</span>${attempts ? `<span class="attempts">${escapeHtml(attempts)}</span>` : ''}</td>
+    <td>${results}</td>
+    <td title="${escapeHtml(keywords.join(', '))}">${escapeHtml(kwPreview) || '—'}</td>
+    <td>${fmtDate(date)}</td>
+    <td class="actions">${actions}</td>
+  </tr>`;
+}
+
+function renderAlert(breaker) {
+  if (!breaker || !breaker.paused) {
+    alertContainer.innerHTML = '';
+    return;
+  }
+  alertContainer.innerHTML = `<div class="alert">
+    <div>
+      <strong>File en pause — blocage probable</strong>
+      <div>${escapeHtml(breaker.reason || '')}</div>
+      <div class="alert-hint">Vérifiez/ajoutez un proxy (voir README), puis reprenez la file.</div>
+    </div>
+    <button id="resume-btn">Reprendre la file</button>
+  </div>`;
+}
+
+function renderAll(queueItems, engineJobs) {
+  const tracked = new Set(queueItems.map((it) => it.engineJobId).filter(Boolean));
+  const rows = [];
+
+  for (const item of queueItems) {
+    const badge = queueItemStatus(item);
+    const actions = [];
+    const hasData = item.engineJobId && item.resultCount !== 0;
+    if (item.engineJobId && (item.status === 'ok' || item.status === 'failed') && hasData) {
+      actions.push(`<button data-action="preview" data-src="queue" data-engine-id="${item.engineJobId}" data-name="${escapeHtml(item.name)}">Aperçu</button>`);
+      actions.push(`<a href="${API_BASE}/${item.engineJobId}/download" download>Télécharger</a>`);
+    }
+    actions.push(`<button class="danger" data-action="delete" data-src="queue" data-id="${item.id}" data-name="${escapeHtml(item.name)}">Supprimer</button>`);
+
+    rows.push({
+      sortKey: item.createdAt,
+      html: rowHtml({
+        name: item.name,
+        badge,
+        results: item.resultCount === null || item.resultCount === undefined ? '—' : `<strong>${item.resultCount}</strong>`,
+        attempts: item.attempts > 1 ? `essai ${item.attempts}/${item.maxAttempts}` : '',
+        keywords: item.keywords || [],
+        date: item.createdAt,
+        actions: actions.join(''),
+        note: item.error || '',
+      }),
+    });
+  }
+
+  for (const job of engineJobs) {
+    if (tracked.has(job.ID)) continue; // already shown as a queue item
+    const actions = [];
+    if (job.Status === 'ok') {
+      actions.push(`<button data-action="preview" data-src="engine" data-engine-id="${job.ID}" data-name="${escapeHtml(job.Name)}">Aperçu</button>`);
+      actions.push(`<a href="${API_BASE}/${job.ID}/download" download>Télécharger</a>`);
+    }
+    actions.push(`<button class="danger" data-action="delete" data-src="engine" data-id="${job.ID}" data-name="${escapeHtml(job.Name)}">Supprimer</button>`);
+
+    rows.push({
+      sortKey: job.Date,
+      html: rowHtml({
+        name: job.Name,
+        badge: { cls: job.Status === 'ok' ? 'ok' : job.Status === 'failed' ? 'failed' : 'working', label: job.Status },
+        results: '—',
+        attempts: '',
+        keywords: (job.Data && job.Data.keywords) || [],
+        date: job.Date,
+        actions: actions.join(''),
+        note: 'créé hors file',
+      }),
+    });
+  }
+
+  if (rows.length === 0) {
     jobsContainer.innerHTML = '<div class="empty">Aucun job pour le moment — lancez-en un à gauche.</div>';
     return;
   }
 
-  const sorted = [...jobs].sort((a, b) => new Date(b.Date) - new Date(a.Date));
-
-  const rows = sorted
-    .map((job) => {
-      const kws = job.Data && job.Data.keywords ? job.Data.keywords : [];
-      const kwPreview = kws.slice(0, 2).join(', ') + (kws.length > 2 ? ` +${kws.length - 2}` : '');
-      const status = job.Status;
-      const actions = [];
-
-      if (status === 'ok') {
-        actions.push(`<button data-action="preview" data-id="${job.ID}" data-name="${escapeHtml(job.Name)}">Aperçu</button>`);
-        actions.push(`<a href="${API_BASE}/${job.ID}/download" download>Télécharger</a>`);
-      }
-      actions.push(`<button class="danger" data-action="delete" data-id="${job.ID}" data-name="${escapeHtml(job.Name)}">Supprimer</button>`);
-
-      return `<tr>
-        <td>${escapeHtml(job.Name)}</td>
-        <td><span class="badge ${status}">${statusLabel(status)}</span></td>
-        <td title="${escapeHtml(kws.join(', '))}">${escapeHtml(kwPreview) || '—'}</td>
-        <td>${fmtDate(job.Date)}</td>
-        <td class="actions">${actions.join('')}</td>
-      </tr>`;
-    })
-    .join('');
+  rows.sort((a, b) => new Date(b.sortKey) - new Date(a.sortKey));
 
   jobsContainer.innerHTML = `
     <table class="jobs">
       <thead>
-        <tr><th>Nom</th><th>Statut</th><th>Recherches</th><th>Créé</th><th>Actions</th></tr>
+        <tr><th>Nom</th><th>Statut</th><th>Résultats</th><th>Recherches</th><th>Créé</th><th>Actions</th></tr>
       </thead>
-      <tbody>${rows}</tbody>
+      <tbody>${rows.map((r) => r.html).join('')}</tbody>
     </table>`;
 }
 
-function escapeHtml(str) {
-  return String(str ?? '').replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]));
-}
+async function refresh() {
+  let queueItems = [];
+  let engineJobs = [];
 
-async function fetchJobs() {
   try {
-    const res = await fetch(API_BASE);
+    const res = await fetch(QUEUE_BASE);
     if (res.status === 401) return; // browser will show the basic-auth prompt
-    const jobs = await res.json();
-    jobsCache = Array.isArray(jobs) ? jobs : [];
-    renderJobs(jobsCache);
+    const data = await res.json();
+    queueItems = data.items || [];
+    renderAlert(data.breaker);
   } catch (err) {
     jobsContainer.innerHTML = `<div class="empty">Impossible de contacter le serveur (${escapeHtml(err.message)})</div>`;
+    return;
   }
+
+  try {
+    const res = await fetch(API_BASE);
+    if (res.ok) {
+      const jobs = await res.json();
+      engineJobs = Array.isArray(jobs) ? jobs : [];
+    }
+  } catch {
+    // the engine list is only used for jobs created outside the queue
+  }
+
+  renderAll(queueItems, engineJobs);
 }
 
 jobsContainer.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('button[data-action]');
   if (!btn) return;
-  const { action, id, name } = btn.dataset;
+  const { action, src, id, name } = btn.dataset;
 
   if (action === 'delete') {
     if (!confirm(`Supprimer le job "${name}" et ses résultats ?`)) return;
-    await fetch(`${API_BASE}/${id}`, { method: 'DELETE' });
-    fetchJobs();
+    const url = src === 'queue' ? `${QUEUE_BASE}/${id}` : `${API_BASE}/${id}`;
+    await fetch(url, { method: 'DELETE' });
+    refresh();
   } else if (action === 'preview') {
-    openPreview(id, name);
+    openPreview(btn.dataset.engineId, name);
   }
 });
 
-// ---------- waiting queue (not yet submitted to the engine) ----------
-
-const queuePanel = document.getElementById('queue-panel');
-const queueContainer = document.getElementById('queue-container');
-
-function renderQueue(items) {
-  const waiting = (items || []).filter((it) => it.status === 'queued');
-
-  if (waiting.length === 0) {
-    queuePanel.style.display = 'none';
-    return;
-  }
-  queuePanel.style.display = '';
-
-  const rows = waiting
-    .map(
-      (it) => `<div class="queue-row">
-        <span class="pos">${it.queuePosition}</span>
-        <span class="name">${escapeHtml(it.name)}</span>
-        <span class="kw">${escapeHtml((it.keywords || []).join(', '))}</span>
-        <button data-queue-action="cancel" data-id="${it.id}">Retirer</button>
-      </div>`
-    )
-    .join('');
-
-  queueContainer.innerHTML = `<div class="queue-list">${rows}</div>`;
-}
-
-async function fetchQueue() {
-  try {
-    const res = await fetch(QUEUE_BASE);
-    if (res.status === 401) return;
-    const items = await res.json();
-    renderQueue(Array.isArray(items) ? items : []);
-  } catch {
-    // silently ignore — the main jobs panel already surfaces connectivity errors
-  }
-}
-
-queueContainer.addEventListener('click', async (ev) => {
-  const btn = ev.target.closest('button[data-queue-action="cancel"]');
-  if (!btn) return;
-  await fetch(`${QUEUE_BASE}/${btn.dataset.id}`, { method: 'DELETE' });
-  fetchQueue();
+alertContainer.addEventListener('click', async (ev) => {
+  if (!ev.target.closest('#resume-btn')) return;
+  await fetch(`${QUEUE_BASE}/resume`, { method: 'POST' });
+  refresh();
 });
 
 // ---------- CSV preview modal ----------
@@ -369,9 +420,5 @@ async function openPreview(id, name) {
 // ---------- boot ----------
 
 setMode('single');
-fetchJobs();
-fetchQueue();
-pollTimer = setInterval(() => {
-  fetchJobs();
-  fetchQueue();
-}, POLL_MS);
+refresh();
+setInterval(refresh, POLL_MS);

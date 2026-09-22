@@ -98,6 +98,11 @@ légers mais risque l'OOM sur des jobs plus lourds — ajustez `plan:` dans
 | `DEFAULT_PROXIES` | Optionnel — proxies appliqués par défaut à tout job qui n'en spécifie pas (liste séparée par virgules ou retours à la ligne) | vide (aucun proxy) |
 | `SCRAPER_CONCURRENCY` | Vitesse globale du moteur (voir "Vitesse et mode headless" ci-dessous) | `2` |
 | `SCRAPER_BROWSER_POOL_SIZE` | Avancé — voir section "Proxies" (uniquement utile avec une liste de plusieurs IP statiques) | `0` (auto) |
+| `JOB_MAX_ATTEMPTS` | Nombre de tentatives avant d'abandonner un job sans résultat | `3` |
+| `JOB_RETRY_DELAY_MINUTES` | Délai de base avant reprise (tentative n = n × ce délai) | `5` |
+| `BLOCK_PAUSE_THRESHOLD` | Jobs consécutifs sans résultat avant mise en pause de la file | `3` |
+| `JOB_DELAY_SECONDS` | Pause entre deux jobs | `30` |
+| `ZOMBIE_SLACK_MINUTES` | Marge au-delà du temps max d'un job avant de le considérer bloqué | `5` |
 
 ## Vitesse et mode headless
 
@@ -116,6 +121,80 @@ légers mais risque l'OOM sur des jobs plus lourds — ajustez `plan:` dans
     plus de RAM/CPU consommés (chaque unité ≈ un onglet Chromium
     supplémentaire) — à augmenter en même temps que le `plan:` du service si
     besoin.
+
+## Robustesse : ce qu'il faut savoir avant de scraper en volume
+
+J'ai audité le code du moteur upstream (et de `scrapemate`, la brique de
+crawling en dessous) pour répondre précisément à la question "est-il malin
+face aux blocages ?". **Réponse honnête : non, le moteur n'a aucune notion de
+blocage.** Voici les faits, puis ce que cette interface ajoute pour compenser.
+
+### Ce que le moteur NE fait PAS (vérifié dans son code)
+
+| Situation | Comportement réel du moteur |
+|---|---|
+| CAPTCHA / page "trafic inhabituel" | **Aucune détection.** La page renvoie un HTTP 200, elle est parsée normalement et produit 0 résultat |
+| Blocage / IP grillée | **Aucune bascule de proxy.** La fonction prévue pour ça (`RefreshIP`) est un `// TODO Implement` non implémenté |
+| Bandeau de consentement Google | Tentative de clic sur "reject", **en anglais et allemand uniquement** — pas en français |
+| Google change la structure de ses pages | **Aucune erreur.** Les champs sont lus à des positions fixes dans un tableau JSON ; en cas de décalage, les colonnes sortent vides sans que rien ne le signale |
+| Job qui ne ramène rien | **Marqué "terminé" quand même.** Le statut est mis à `ok` sans jamais regarder le nombre de résultats — un scrape totalement bloqué produit un fichier de 0 octet affiché comme un succès |
+| Rythme des requêtes | **Aucun.** Pas de délai, pas de jitter : il tape aussi vite que la concurrence le permet |
+| Camouflage (stealth) | Chromium quasi standard, User-Agent Chrome 91 (2021). Détectable |
+| Cloudflare sur le site d'un établissement (extraction d'email) | Erreur avalée, colonne email vide — indistinguable de "pas d'email" |
+
+Conséquence directe : **sans garde-fous, vous pouviez vous retrouver avec 50
+jobs "terminés" et 50 fichiers vides, sans aucune alerte.**
+
+### Ce que cette interface ajoute par-dessus
+
+Comme le moteur ne peut pas être corrigé sans le forker, la robustesse est
+implémentée dans la couche de gestion (`server/server.js`) :
+
+1. **Le statut du moteur n'est jamais cru sur parole.** À la fin de chaque
+   job, le serveur relit le fichier de résultats et **compte réellement les
+   lignes**. 0 ligne = échec, quoi qu'en dise le moteur.
+2. **Reprise automatique.** Un job sans résultat est relancé jusqu'à
+   `JOB_MAX_ATTEMPTS` fois, avec un délai croissant (5 min, puis 10) — parce
+   qu'un blocage ne se lève pas en trois secondes.
+3. **Disjoncteur anti-gaspillage.** Après `BLOCK_PAUSE_THRESHOLD` jobs
+   consécutifs sans résultat, **toute la file se met en pause** et une alerte
+   rouge s'affiche dans l'interface, au lieu de brûler vos 200 recherches
+   restantes contre un mur. Vous corrigez (proxy), puis vous cliquez
+   "Reprendre la file".
+4. **Détection de changement de page Google.** Le serveur échantillonne le
+   CSV : si plus de 50 % des lignes n'ont pas de nom d'établissement, c'est
+   que Google a bougé sa structure. Le job échoue immédiatement (inutile de
+   réessayer) et la file se met en pause avec un message explicite — plutôt
+   que de vous livrer des milliers de lignes vides.
+5. **Anti-blocage de la file.** Le moteur laisse parfois un job coincé en
+   "en cours" pour toujours (bug upstream : le statut n'est pas mis à jour en
+   cas d'erreur). Comme les jobs s'exécutent un par un, cela figerait tout :
+   un chien de garde détecte le dépassement (`max_time` + marge), abandonne
+   le job et passe au suivant.
+6. **Rythme.** `JOB_DELAY_SECONDS` (30 s par défaut) entre deux jobs.
+7. **Langue par défaut `en`.** Le bandeau de consentement n'est géré qu'en
+   anglais/allemand par le moteur : en `fr`, un job peut revenir vide. Les
+   établissements trouvés sont les mêmes, seules les catégories changent de
+   langue.
+
+### Ce qui reste hors de portée (soyez lucide là-dessus)
+
+- **Aucune solution ne résout un CAPTCHA.** Si Google en sert un, le job
+  revient vide ; l'interface le détectera et vous alertera, mais la vraie
+  réponse reste : de bons proxies résidentiels et un rythme raisonnable.
+- **Le camouflage du navigateur ne peut pas être amélioré** sans forker le
+  moteur. C'est la raison n°1 pour laquelle les proxies résidentiels ne sont
+  pas optionnels en usage intensif.
+- **La colonne `emails` est peu fiable** par nature (site protégé, timeout,
+  email en image…). Une case vide ne veut pas dire "pas d'email".
+- **Si Google change sa structure**, le seul vrai correctif est une mise à
+  jour du moteur upstream. L'interface vous préviendra dès la première
+  occurrence — elle ne pourra pas réparer l'extraction à sa place.
+
+**En résumé : ce n'est pas "100 % fonctionnel quoi qu'il arrive" — aucun
+scraper Google Maps ne peut l'être. Mais vous ne travaillerez jamais à
+l'aveugle : tout échec est détecté, signalé et, quand c'est utile, réessayé
+automatiquement.**
 
 ## Proxies
 
