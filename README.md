@@ -96,23 +96,90 @@ légers mais risque l'OOM sur des jobs plus lourds — ajustez `plan:` dans
 | `SCRAPER_INTERNAL_PORT` | Port interne du moteur (ne pas exposer) | `8081` |
 | `PORT` | Port public (fourni automatiquement par Render) | `3000` en local |
 | `DEFAULT_PROXIES` | Optionnel — proxies appliqués par défaut à tout job qui n'en spécifie pas (liste séparée par virgules ou retours à la ligne) | vide (aucun proxy) |
+| `SCRAPER_CONCURRENCY` | Vitesse globale du moteur (voir "Vitesse et mode headless" ci-dessous) | `2` |
+| `SCRAPER_BROWSER_POOL_SIZE` | Avancé — voir section "Proxies" (uniquement utile avec une liste de plusieurs IP statiques) | `0` (auto) |
 
-## Ai-je besoin de proxies ?
+## Vitesse et mode headless
 
-**Non, pas pour démarrer.** Le déploiement fonctionne tel quel sur Render,
-sans aucune clé API ni proxy. Pour un usage léger à modéré (quelques jobs par
-jour, profondeur raisonnable), l'IP du service suffit.
+- **Le moteur est toujours headless** (pas d'interface graphique visible) sur
+  ce déploiement — c'est normal et nécessaire : Render n'a pas d'écran, et le
+  mode serveur (`-web`) du moteur ne propose de toute façon pas d'option pour
+  afficher le navigateur, même en local. Pour "voir" ce qui se passe, il faut
+  se fier au statut des jobs et aux résultats — pas de fenêtre à regarder.
+- **La vitesse se règle à deux niveaux** :
+  - Par job, dans le formulaire : la **profondeur** (plus profond = plus de
+    résultats mais plus lent) et le **mode rapide** (jusqu'à ~21 résultats
+    par recherche, plus rapide, mais nécessite une position lat/lon).
+  - Globalement, pour tout le service : `SCRAPER_CONCURRENCY` (dashboard
+    Render → Environment) contrôle combien de recherches sont traitées en
+    parallèle à l'intérieur d'un même job. Plus élevé = plus rapide, mais
+    plus de RAM/CPU consommés (chaque unité ≈ un onglet Chromium
+    supplémentaire) — à augmenter en même temps que le `plan:` du service si
+    besoin.
 
-Les proxies deviennent utiles si vous scrapez **beaucoup, souvent, ou avec
-beaucoup de mots-clés d'affilée** : Google peut alors limiter ou bloquer
-temporairement l'IP qui fait toutes ces requêtes. Deux façons d'en ajouter
-si besoin, sans rien redéployer :
-- Globalement pour tous les jobs : variable d'environnement `DEFAULT_PROXIES`
-  (dashboard Render → Environment).
-- Au cas par cas : champ "Proxies" dans les options avancées du formulaire,
-  pour un job donné.
+## Proxies
 
-Protocoles supportés par le moteur : `http`, `https`, `socks5`, `socks5h`.
+**Pour démarrer, non.** Le déploiement fonctionne tel quel sur Render, sans
+clé API ni proxy. Mais **pour un usage intensif dès le début** (beaucoup de
+jobs, tous les jours), configurez un proxy dès le départ : sans ça, l'IP du
+service Render se fera limiter/bloquer par Google assez vite, avant même que
+vous ayez le temps de vous en rendre compte.
+
+### Quel type de proxy ?
+
+Pour scraper Google Maps spécifiquement, un proxy **datacenter** classique
+(le moins cher) se fait repérer très vite par Google — c'est reconnu comme
+trafic automatisé. Il faut des proxies **résidentiels rotatifs** (IP de
+particuliers, donc indiscernables d'un vrai visiteur).
+
+### Ce que je recommande : Webshare
+
+[Webshare.io](https://www.webshare.io/) — le plus simple et le moins cher
+pour démarrer :
+- Compte gratuit sans carte bancaire : 10 proxies datacenter + 1 Go/mois,
+  utilisable indéfiniment (suffisant pour tester avant de payer).
+- Proxies résidentiels rotatifs à partir d'environ **3,50 $/Go** (dégressif
+  avec le volume).
+- Configuration en une ligne : leur dashboard vous donne directement une URL
+  du type `http://user:pass@p.webshare.io:80` — copiez-collez, rien d'autre
+  à faire.
+
+Budget réaliste pour 2 000 à 10 000 fiches/mois : environ **15-40 $/mois**
+avec des proxies résidentiels. (Decodo/Smartproxy et IPRoyal sont des
+alternatives correctes, un peu plus chères ; évitez Oxylabs/Bright Data —
+pensés pour des grosses entreprises, plus chers et plus compliqués à mettre
+en place pour un usage comme le vôtre.)
+
+### Comment le configurer ici
+
+- **Globalement**, pour que tous les jobs en profitent automatiquement :
+  variable d'environnement `DEFAULT_PROXIES` (dashboard Render → Environment
+  → modifier la valeur, pas besoin de redéployer le code).
+- **Au cas par cas** : champ "Proxies" dans les options avancées du
+  formulaire, pour un job donné (prioritaire sur `DEFAULT_PROXIES`).
+
+Dans les deux cas, **collez une seule ligne** : l'URL de passerelle rotative
+donnée par votre fournisseur (voir ci-dessus). Protocoles supportés par le
+moteur : `http`, `https`, `socks5`, `socks5h`. Si le mot de passe contient un
+caractère spécial (`@ : / % ?`), encodez-le (ex. `@` → `%40`) sinon l'URL ne
+sera pas lue correctement.
+
+### Pourquoi une seule URL de passerelle plutôt qu'une liste d'IP
+
+Techniquement, le moteur attribue **un proxy par navigateur Chromium, pour
+toute la durée de vie de ce navigateur** (pas de rotation en cours de job, et
+**pas de bascule automatique** si un proxy se fait bloquer — ce point n'est
+pas implémenté côté moteur upstream). Si vous collez une liste de 10 IP
+statiques, seules les 1-2 premières seront réellement utilisées à moins
+d'augmenter aussi `SCRAPER_BROWSER_POOL_SIZE` (variable d'environnement,
+voir `render.yaml`) pour qu'il y ait un navigateur — et donc un proxy — par
+IP de la liste.
+
+Une **passerelle rotative** (le mode recommandé ci-dessus) évite complètement
+ce problème : le changement d'IP se fait automatiquement côté fournisseur, à
+chaque connexion, même si le moteur ne "voit" qu'une seule URL de proxy. Pour
+un non-développeur, c'est la configuration la plus simple ET la plus
+efficace — pas besoin de toucher à `SCRAPER_BROWSER_POOL_SIZE`.
 
 ## Développement local
 

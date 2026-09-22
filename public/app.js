@@ -125,6 +125,7 @@ form.addEventListener('submit', async (ev) => {
 
     const result = await submitQueueItems(items);
     (result.created || []).forEach((c, i) => logLine(`✓ (${i + 1}/${items.length}) en file: ${c.name}`, 'ok'));
+    if (result.warning) logLine(`⚠ ${result.warning}`, 'err');
     logLine("terminé — les jobs s'exécuteront automatiquement un par un, dans l'ordre.", 'ok');
 
     fetchQueue();

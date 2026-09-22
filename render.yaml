@@ -26,10 +26,24 @@ services:
         value: /data
       - key: SCRAPER_INTERNAL_PORT
         value: "8081"
+      - key: SCRAPER_CONCURRENCY
+        value: "2" # global "speed" knob (-c flag): how many searches the engine
+                    # processes in parallel *within* a single job. Higher = faster
+                    # but more RAM/CPU per Chromium tab; raise together with `plan:`
+                    # above. Jobs themselves still run one at a time (see the FIFO
+                    # queue in server.js) — this only affects how fast each one goes.
       - key: DEFAULT_PROXIES
         sync: false # optional. Leave empty to run without proxies (works fine for
-                     # light/moderate use). If Google starts rate-limiting/blocking
-                     # your Render IP, set this in the dashboard to a comma- or
-                     # newline-separated list of proxy URLs
-                     # (protocol://user:pass@host:port) and every job that doesn't
-                     # specify its own proxies will use these automatically.
+                     # light/occasional use). For heavy/daily scraping, set this in
+                     # the dashboard — see README "Proxies" section for a
+                     # recommended provider. Best used as ONE rotating-gateway URL
+                     # (protocol://user:pass@host:port); every job that doesn't
+                     # specify its own proxies uses this automatically.
+      - key: SCRAPER_BROWSER_POOL_SIZE
+        value: "0" # advanced, only relevant if DEFAULT_PROXIES/per-job proxies
+                    # lists several *individual* static proxy IPs instead of one
+                    # rotating gateway: the engine binds one proxy per browser
+                    # instance for that browser's whole run, round-robin across
+                    # the list — raise this to (roughly) your proxy count so they
+                    # actually all get used. 0 = let the engine pick automatically
+                    # (fine for 0 or 1 proxy / a rotating gateway).

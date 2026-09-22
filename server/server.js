@@ -29,13 +29,40 @@ const SCRAPER_PORT = process.env.SCRAPER_INTERNAL_PORT || '8081';
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || '';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const DATA_FOLDER = process.env.DATA_FOLDER || '/data';
-const DEFAULT_PROXIES = (process.env.DEFAULT_PROXIES || '')
-  .split(/[\n,]/)
-  .map((p) => p.trim())
-  .filter(Boolean);
 const QUEUE_FILE = path.join(DATA_FOLDER, 'queue.json');
 const DISPATCH_INTERVAL_MS = 3000;
 const MAX_ITEMS_PER_REQUEST = 200;
+
+const PROXY_URL_RE = /^(https?|socks5h?):\/\/(?:[^:@/]+:[^@/]+@)?[^\s:@/]+:\d{1,5}\/?$/i;
+
+// Validates "protocol://[user:pass@]host:port" without ever logging the
+// credentials themselves (only the redacted host:port survives in logs).
+function validateProxies(list, sourceLabel) {
+  const valid = [];
+  const invalid = [];
+  for (const raw of list) {
+    const p = String(raw).trim();
+    if (!p) continue;
+    if (PROXY_URL_RE.test(p)) {
+      valid.push(p);
+    } else {
+      const redacted = p.replace(/:\/\/[^@]+@/, '://***@');
+      invalid.push(redacted);
+    }
+  }
+  if (invalid.length > 0) {
+    console.warn(
+      `[proxies] ${sourceLabel}: ignoring ${invalid.length} malformed proxy URL(s) (expected ` +
+        `protocol://[user:pass@]host:port with http/https/socks5/socks5h): ${invalid.join(', ')}`
+    );
+  }
+  return { valid, invalid };
+}
+
+const DEFAULT_PROXIES = validateProxies(
+  (process.env.DEFAULT_PROXIES || '').split(/[\n,]/),
+  'DEFAULT_PROXIES'
+).valid;
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
@@ -310,12 +337,17 @@ async function handleQueueCreate(req, res) {
   }
 
   const created = [];
+  let droppedProxyCount = 0;
   for (const raw of items) {
     const name = String(raw.name || '').trim();
     const keywords = Array.isArray(raw.keywords) ? raw.keywords.map((k) => String(k).trim()).filter(Boolean) : [];
     if (!name || keywords.length === 0) {
       return sendJSON(res, 422, { message: 'chaque item nécessite un nom et au moins un mot-clé' });
     }
+
+    const rawProxies = Array.isArray(raw.proxies) ? raw.proxies : [];
+    const { valid: proxies, invalid: invalidProxies } = validateProxies(rawProxies, `job "${name}"`);
+    droppedProxyCount += invalidProxies.length;
 
     const payload = {
       name,
@@ -330,7 +362,7 @@ async function handleQueueCreate(req, res) {
       email: !!raw.email,
       extra_reviews: !!raw.extra_reviews,
       max_time: Number.isFinite(raw.max_time) ? raw.max_time : 1200,
-      proxies: Array.isArray(raw.proxies) ? raw.proxies.map((p) => String(p).trim()).filter(Boolean) : [],
+      proxies,
     };
 
     const item = {
@@ -347,7 +379,12 @@ async function handleQueueCreate(req, res) {
   }
 
   persistQueue();
-  sendJSON(res, 201, { created });
+  sendJSON(res, 201, {
+    created,
+    ...(droppedProxyCount > 0
+      ? { warning: `${droppedProxyCount} proxy URL(s) ignorée(s) car mal formée(s) (attendu: protocole://user:pass@host:port)` }
+      : {}),
+  });
   dispatchTick();
 }
 

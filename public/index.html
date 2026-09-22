@@ -98,8 +98,15 @@
           </div>
         </div>
 
-        <label for="proxies">Proxies (optionnel, un par ligne)</label>
+        <label for="proxies">Proxies (optionnel)</label>
         <textarea id="proxies" placeholder="http://user:pass@host:port"></textarea>
+        <div class="hint">
+          Idéalement <strong>une seule ligne</strong> : l'URL de passerelle rotative
+          de votre fournisseur (elle change d'IP automatiquement). Si le mot de
+          passe contient des caractères spéciaux (@ : / % ?), encodez-les
+          (%40, %3A…). Laissez vide pour utiliser la config par défaut du
+          serveur (<code>DEFAULT_PROXIES</code>), le cas échéant.
+        </div>
       </details>
 
       <button type="submit" class="primary" id="submit-btn">Lancer le(s) scraper(s)</button>
