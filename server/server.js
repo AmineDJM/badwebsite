@@ -19,6 +19,7 @@
 // a class of supply-chain / install failures for something this small.
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -77,6 +78,29 @@ const DEFAULT_PROXIES = validateProxies(
   'DEFAULT_PROXIES'
 ).valid;
 
+// A provider's "proxy list" download link. Its contents change over time
+// (proxies get replaced), so it's refetched periodically rather than pasted.
+// The URL embeds an API token — never log it.
+const PROXY_LIST_URL = (process.env.PROXY_LIST_URL || '').trim();
+const PROXY_LIST_REFRESH_MS = intEnv('PROXY_LIST_REFRESH_MINUTES', 30, 1) * 60_000;
+
+// Providers hand out lists in several shapes; normalise them all to a URL.
+function parseProxyLine(line) {
+  const s = String(line).trim();
+  if (!s || s.startsWith('#')) return null;
+  if (/^(https?|socks5h?):\/\//i.test(s)) return s;
+  if (s.includes('@')) return `http://${s}`;
+
+  const parts = s.split(':');
+  if (parts.length === 4) {
+    // Webshare's download format: host:port:username:password
+    const [host, port, user, pass] = parts;
+    return `http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`;
+  }
+  if (parts.length === 2) return `http://${s}`;
+  return null;
+}
+
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
 const MIME_TYPES = {
@@ -98,6 +122,59 @@ if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
 }
 if (DEFAULT_PROXIES.length > 0) {
   console.log(`[server] ${DEFAULT_PROXIES.length} default proxy(ies) configured via DEFAULT_PROXIES`);
+}
+
+let fetchedProxies = [];
+let proxyListError = null;
+// The first download is still in flight during startup: an empty pool means
+// "not loaded yet", not "no proxies", and must not trip the guard below.
+let proxyListReady = !PROXY_LIST_URL;
+
+function fetchProxyList() {
+  return new Promise((resolve, reject) => {
+    const lib = PROXY_LIST_URL.startsWith('https:') ? https : http;
+    const req = lib.get(PROXY_LIST_URL, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        reject(new Error(`HTTP ${res.statusCode}`));
+        return;
+      }
+      let raw = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => (raw += c));
+      res.on('end', () => resolve(raw));
+    });
+    req.on('error', reject);
+    req.setTimeout(20_000, () => req.destroy(new Error('timeout')));
+  });
+}
+
+async function refreshProxyList() {
+  if (!PROXY_LIST_URL) return;
+  try {
+    const raw = await fetchProxyList();
+    const urls = raw.split('\n').map(parseProxyLine).filter(Boolean);
+    const { valid } = validateProxies(urls, 'PROXY_LIST_URL');
+    if (valid.length === 0) {
+      // Keep the previous list rather than silently losing all proxies.
+      proxyListError = 'la liste téléchargée ne contient aucun proxy exploitable';
+      console.error(`[proxies] ${proxyListError}`);
+      return;
+    }
+    fetchedProxies = valid;
+    proxyListError = null;
+    console.log(`[proxies] proxy list refreshed: ${valid.length} proxy(ies) available`);
+  } catch (err) {
+    proxyListError = `téléchargement de la liste impossible : ${err.message}`;
+    console.error(`[proxies] ${proxyListError}`);
+  } finally {
+    proxyListReady = true;
+  }
+}
+
+if (PROXY_LIST_URL) {
+  refreshProxyList();
+  setInterval(refreshProxyList, PROXY_LIST_REFRESH_MS);
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +278,7 @@ async function engineDeleteJob(id) {
 
 let queue = [];
 let breaker = { consecutiveFailures: 0, paused: false, pausedAt: null, pauseReason: null };
+let proxyCursor = 0;
 let lastFinishedAt = null;
 let dispatching = false;
 
@@ -213,6 +291,7 @@ function loadQueue() {
     } else {
       queue = parsed.queue || [];
       breaker = { ...breaker, ...(parsed.breaker || {}) };
+      proxyCursor = parsed.proxyCursor || 0;
     }
     console.log(`[queue] loaded ${queue.length} item(s) from ${QUEUE_FILE}`);
     if (breaker.paused) {
@@ -226,7 +305,7 @@ function loadQueue() {
 function persistQueue() {
   try {
     fs.mkdirSync(DATA_FOLDER, { recursive: true });
-    fs.writeFileSync(QUEUE_FILE, JSON.stringify({ version: 2, queue, breaker }, null, 2));
+    fs.writeFileSync(QUEUE_FILE, JSON.stringify({ version: 2, queue, breaker, proxyCursor }, null, 2));
   } catch (err) {
     console.error('[queue] failed to persist queue.json:', err.message);
   }
@@ -496,12 +575,30 @@ function applySessionRotation(proxies) {
   return proxies.map((p) => p.replace(/\{session\}/g, token));
 }
 
+function proxyPool() {
+  return [...DEFAULT_PROXIES, ...fetchedProxies];
+}
+
+// Handing the engine the whole list would be pointless: it binds one proxy per
+// browser for that browser's lifetime, so only the first entry or two would
+// ever be used. Instead we hand it exactly one, and walk the list ourselves —
+// one IP per job, every proxy eventually used, cursor persisted so a restart
+// doesn't always land back on the first one.
+function pickProxyForJob() {
+  const pool = proxyPool();
+  if (pool.length === 0) return [];
+  const chosen = pool[proxyCursor % pool.length];
+  proxyCursor = (proxyCursor + 1) % pool.length;
+  return applySessionRotation([chosen]);
+}
+
 async function submitNext(item) {
   const payload = { ...item.payload };
-  if ((!payload.proxies || payload.proxies.length === 0) && DEFAULT_PROXIES.length > 0) {
-    payload.proxies = DEFAULT_PROXIES;
+  if (!payload.proxies || payload.proxies.length === 0) {
+    payload.proxies = pickProxyForJob();
+  } else {
+    payload.proxies = applySessionRotation(payload.proxies);
   }
-  payload.proxies = applySessionRotation(payload.proxies);
 
   item.attempts = (item.attempts || 0) + 1;
   try {
@@ -534,6 +631,20 @@ async function dispatchTick() {
     }
 
     if (breaker.paused) return;
+
+    if (!proxyListReady) return; // first download still in flight
+
+    // Configuring a proxy list and then scraping without one would quietly burn
+    // the server's own IP — exactly what the proxies were meant to prevent.
+    if (PROXY_LIST_URL && proxyPool().length === 0) {
+      forcePause(
+        `Aucun proxy disponible : ${proxyListError || 'liste vide'}. ` +
+          `Les jobs sont mis en pause plutôt que lancés sans proxy (ce qui grillerait l'IP du serveur). ` +
+          `Vérifiez le lien PROXY_LIST_URL, puis reprenez la file.`
+      );
+      persistQueue();
+      return;
+    }
 
     // Breathing room between jobs: back-to-back hammering is what gets an IP
     // flagged in the first place.
@@ -603,7 +714,8 @@ async function handleQueueList(req, res) {
     config: {
       maxAttempts: JOB_MAX_ATTEMPTS,
       jobDelaySeconds: JOB_DELAY_MS / 1000,
-      proxiesConfigured: DEFAULT_PROXIES.length,
+      proxiesConfigured: proxyPool().length,
+      proxyListError,
     },
   });
 }

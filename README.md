@@ -96,6 +96,8 @@ légers mais risque l'OOM sur des jobs plus lourds — ajustez `plan:` dans
 | `SCRAPER_INTERNAL_PORT` | Port interne du moteur (ne pas exposer) | `8081` |
 | `PORT` | Port public (fourni automatiquement par Render) | `3000` en local |
 | `DEFAULT_PROXIES` | Optionnel — proxies appliqués par défaut à tout job qui n'en spécifie pas (liste séparée par virgules ou retours à la ligne) | vide (aucun proxy) |
+| `PROXY_LIST_URL` | Optionnel — lien « proxy list » du fournisseur, téléchargé et rafraîchi automatiquement (voir Option B) | vide |
+| `PROXY_LIST_REFRESH_MINUTES` | Fréquence de rafraîchissement de cette liste | `30` |
 | `SCRAPER_CONCURRENCY` | Vitesse globale du moteur (voir "Vitesse et mode headless" ci-dessous) | `2` |
 | `SCRAPER_BROWSER_POOL_SIZE` | Avancé — voir section "Proxies" (uniquement utile avec une liste de plusieurs IP statiques) | `0` (auto) |
 | `JOB_MAX_ATTEMPTS` | Nombre de tentatives avant d'abandonner un job sans résultat | `3` |
@@ -211,7 +213,7 @@ Pour scraper Google Maps spécifiquement, un proxy **datacenter** classique
 trafic automatisé. Il faut des proxies **résidentiels rotatifs** (IP de
 particuliers, donc indiscernables d'un vrai visiteur).
 
-### Réglages Webshare exacts
+### Option A : réglages Webshare exacts (recommandé)
 
 Dans le dashboard Webshare :
 
@@ -263,6 +265,41 @@ avec des proxies résidentiels. (Decodo/Smartproxy et IPRoyal sont des
 alternatives correctes, un peu plus chères ; évitez Oxylabs/Bright Data —
 pensés pour des grosses entreprises, plus chers et plus compliqués à mettre
 en place pour un usage comme le vôtre.)
+
+### Option B : le lien « proxy list » de Webshare
+
+Si vous préférez utiliser le lien de téléchargement de liste fourni par
+Webshare (celui qui ressemble à
+`https://proxy.webshare.io/api/v2/proxy/list/download/XXXX/-/any/username/direct/-/`),
+collez-le dans la variable d'environnement **`PROXY_LIST_URL`**.
+
+Le serveur s'en charge entièrement :
+- il télécharge la liste au démarrage puis la rafraîchit toutes les 30 min
+  (`PROXY_LIST_REFRESH_MINUTES`) — vos proxies peuvent changer chez Webshare
+  sans que vous ayez à retoucher la config ;
+- il convertit automatiquement le format Webshare `ip:port:user:pass` en URL
+  utilisable (les formats `user:pass@ip:port` et `http://…` sont aussi acceptés) ;
+- il **fait tourner un proxy différent à chaque job**, en round-robin sur toute
+  la liste.
+
+⚠️ **Ce dernier point est essentiel** : si on passait la liste entière au
+moteur, il n'utiliserait en pratique que les 1 ou 2 premiers proxies (un proxy
+par navigateur, pour toute la durée de vie du navigateur). C'est l'interface
+qui choisit un proxy par job, pour que toute la liste serve réellement.
+
+**Sécurité** : ce lien contient votre jeton d'API — il n'est jamais écrit dans
+les logs ni transmis au navigateur. Mettez-le uniquement dans les variables
+d'environnement Render.
+
+**Garde-fou** : si le lien devient invalide ou que la liste revient vide, la
+file **se met en pause** au lieu de lancer les jobs sans proxy (ce qui
+grillerait l'IP du serveur Render). Vous voyez l'alerte dans l'interface.
+
+⚠️ **Attention au type de proxies** : le lien de liste correspond en général
+aux proxies **datacenter** (dont les 10 gratuits). Google les repère en
+quelques dizaines de requêtes. Pour du volume réel, il faut du
+**résidentiel** — chez Webshare il se consomme via `p.webshare.io` avec une
+session (Option A ci-dessus), pas via la liste téléchargeable.
 
 ### Comment le configurer ici
 

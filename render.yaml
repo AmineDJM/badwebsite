@@ -41,6 +41,13 @@ services:
                      # {session} is replaced with a fresh id on every dispatch:
                      # one stable IP per job, a new one between jobs. Every job
                      # that doesn't specify its own proxies uses this.
+      - key: PROXY_LIST_URL
+        sync: false # optional alternative to DEFAULT_PROXIES: a provider's
+                     # "proxy list" download link (e.g. Webshare's
+                     # https://proxy.webshare.io/api/v2/proxy/list/download/...).
+                     # Downloaded at boot, refreshed periodically, converted from
+                     # ip:port:user:pass, and rotated one proxy per job. Contains
+                     # an API token — set it here, never in code.
       - key: JOB_MAX_ATTEMPTS
         value: "3" # a job that comes back with 0 results is retried this many
                     # times before being marked failed
