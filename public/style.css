@@ -146,6 +146,16 @@ input:focus, textarea:focus, select:focus {
   color: white;
 }
 
+.mode-box {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--panel-2);
+}
+.mode-box .checkline { margin-top: 0; }
+.mode-box label[for="city"] { margin-top: 10px; }
+
 details.advanced {
   margin-top: 14px;
   border-top: 1px solid var(--border);

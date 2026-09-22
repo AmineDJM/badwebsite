@@ -226,6 +226,48 @@ scraper Google Maps ne peut l'être. Mais vous ne travaillerez jamais à
 l'aveugle : tout échec est détecté, signalé et, quand c'est utile, réessayé
 automatiquement.**
 
+## Économiser de la bande passante proxy
+
+Si vous payez au Go, voici ce qui consomme et ce que vous pouvez couper.
+(Analyse faite en lisant le code du moteur, pas au jugé.)
+
+**Déjà fait, rien à régler :** les images ne sont pas téléchargées. Le moteur
+lance Chromium avec `--blink-settings=imagesEnabled=false`.
+
+**Impossible sans forker le moteur :** bloquer le CSS, les polices ou le
+JavaScript. Le moteur n'expose qu'une seule option de blocage (`DisableImages`),
+et le JS ne peut de toute façon pas être coupé en mode normal — la page doit
+s'exécuter pour que le défilement des résultats fonctionne. Or c'est le JS de
+Google Maps qui pèse le plus lourd.
+
+**Le vrai levier : le mode économique** (case à cocher dans le formulaire).
+Il change complètement de technologie : au lieu de piloter un navigateur, il
+fait une simple requête HTTP par recherche et lit directement la réponse de
+Google. Aucun JS, CSS ni police n'est chargé.
+
+| | Mode normal | Mode économique |
+|---|---|---|
+| Technologie | Navigateur Chromium | Requête HTTP simple |
+| Trafic | 1 page navigateur **par établissement** | 1 requête pour ~21 établissements |
+| Champs obtenus | les 36 | nom, adresse, **téléphone**, **site web**, note, avis (nb), horaires, coordonnées |
+| Perdus | — | avis détaillés, photos, descriptions, propriétaire, menu |
+| Limite | profondeur au choix | ~21 résultats par recherche |
+
+Pour de la prospection (nom + téléphone + site web), le mode économique suffit
+et divise la consommation par un ordre de grandeur. Il demande un point de
+départ : choisissez simplement une ville dans la liste déroulante, elle remplit
+les coordonnées. Pour dépasser ~21 résultats, multipliez les recherches
+(quartiers, mots-clés plus précis) plutôt que la profondeur.
+
+**Deux autres postes de consommation :**
+- **Extraction d'email** : visite le site de chaque établissement, donc du
+  trafic en plus sur des sites que vous ne maîtrisez pas. Ne l'activez que
+  quand vous en avez vraiment besoin.
+- **Avis étendus** : très coûteux (jusqu'à ~300 avis par établissement).
+  Laissez décoché.
+- **Profondeur** : en mode normal, chaque cran de profondeur = plus de
+  défilement et plus de fiches ouvertes.
+
 ## Proxies
 
 **Pour démarrer, non.** Le déploiement fonctionne tel quel sur Render, sans
