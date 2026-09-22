@@ -1,0 +1,13 @@
+services:
+  gmaps-scraper-manager:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - DATA_FOLDER=/data
+      - SCRAPER_INTERNAL_PORT=8081
+      - ADMIN_USERNAME=admin
+      - ADMIN_PASSWORD=changeme
+    volumes:
+      - ./data:/data

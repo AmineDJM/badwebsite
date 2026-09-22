@@ -1,0 +1,8 @@
+.git
+.gitignore
+*.md
+render.yaml
+docker-compose.yml
+gmapsdata
+data
+node_modules

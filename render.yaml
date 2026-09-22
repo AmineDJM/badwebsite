@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: gmaps-scraper-manager
+    env: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: standard # headless Chromium is memory-hungry; "starter" (512MB) can OOM,
+                    # especially with -email or -extra_reviews jobs. Downgrade only
+                    # for light/low-depth scraping.
+    region: frankfurt
+    healthCheckPath: /healthz
+    autoDeploy: true
+    disk:
+      name: scraper-data
+      mountPath: /data
+      sizeGB: 5 # stores jobs.db (SQLite) + every job's result CSV — without this
+                # disk, all job history and results are wiped on every deploy/restart.
+    envVars:
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        generateValue: true # set/override this in the Render dashboard to whatever
+                             # you want; without it (and ADMIN_USERNAME) the UI is
+                             # unauthenticated.
+      - key: DATA_FOLDER
+        value: /data
+      - key: SCRAPER_INTERNAL_PORT
+        value: "8081"

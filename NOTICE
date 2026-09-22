@@ -1,0 +1,13 @@
+This project builds and runs, unmodified, a binary compiled from the source
+of:
+
+  google-maps-scraper
+  https://github.com/gosom/google-maps-scraper
+  Copyright (c) 2023 Georgios Komninos
+  Licensed under the MIT License
+
+See the upstream repository for its full license text. The management UI
+and reverse proxy in this repository (server/, public/, Dockerfile,
+render.yaml, docker-entrypoint.sh) are a separate, independent codebase that
+communicates with the upstream binary exclusively through its documented
+local REST API.

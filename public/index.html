@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Google Maps Scraper — Manager</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <h1><span class="dot"></span> Google Maps Scraper — Manager</h1>
+  <div class="sub">moteur : gosom/google-maps-scraper</div>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Nouveau scrape</h2>
+
+    <div class="mode-toggle">
+      <button type="button" id="mode-single" class="active">Un scraper</button>
+      <button type="button" id="mode-batch">Plusieurs scrapers</button>
+    </div>
+
+    <form id="job-form">
+      <label for="name">Nom du job</label>
+      <input type="text" id="name" placeholder="ex: restaurants-paris" required />
+
+      <label for="keywords" id="keywords-label">Recherches (une par ligne)</label>
+      <textarea id="keywords" placeholder="restaurants paris&#10;coiffeurs lyon&#10;plombiers marseille" required></textarea>
+      <div class="hint" id="keywords-hint">
+        Chaque ligne est une requête Google Maps dans <strong>ce même job</strong>.
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="lang">Langue</label>
+          <select id="lang">
+            <option value="fr" selected>fr</option>
+            <option value="en">en</option>
+            <option value="es">es</option>
+            <option value="de">de</option>
+            <option value="it">it</option>
+            <option value="pt">pt</option>
+            <option value="nl">nl</option>
+          </select>
+        </div>
+        <div>
+          <label for="depth">Profondeur</label>
+          <input type="number" id="depth" value="10" min="1" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="maxtime">Durée max (min)</label>
+          <input type="number" id="maxtime" value="20" min="1" />
+        </div>
+        <div>
+          <label for="radius">Rayon (m)</label>
+          <input type="number" id="radius" value="10000" min="0" />
+        </div>
+      </div>
+
+      <div class="checkline">
+        <input type="checkbox" id="email" />
+        <label for="email">Extraire l'email depuis le site web de chaque établissement</label>
+      </div>
+      <div class="checkline">
+        <input type="checkbox" id="extra_reviews" />
+        <label for="extra_reviews">Avis étendus (plus lent)</label>
+      </div>
+
+      <details class="advanced">
+        <summary>Options avancées (zoom, position, mode rapide, proxies)</summary>
+
+        <div class="row" style="margin-top:10px">
+          <div>
+            <label for="zoom">Zoom (0-21)</label>
+            <input type="number" id="zoom" value="15" min="0" max="21" />
+          </div>
+          <div>
+            <label for="fast_mode">Mode rapide</label>
+            <div class="checkline" style="margin-top:8px">
+              <input type="checkbox" id="fast_mode" />
+              <label for="fast_mode">activer (nécessite lat/lon)</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div>
+            <label for="lat">Latitude</label>
+            <input type="text" id="lat" placeholder="48.8566" />
+          </div>
+          <div>
+            <label for="lon">Longitude</label>
+            <input type="text" id="lon" placeholder="2.3522" />
+          </div>
+        </div>
+
+        <label for="proxies">Proxies (optionnel, un par ligne)</label>
+        <textarea id="proxies" placeholder="http://user:pass@host:port"></textarea>
+      </details>
+
+      <button type="submit" class="primary" id="submit-btn">Lancer le(s) scraper(s)</button>
+      <div class="status-log" id="status-log"></div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="jobs-header">
+      <h2>Jobs</h2>
+      <span class="refresh-hint" id="refresh-hint">actualisation auto…</span>
+    </div>
+    <div id="jobs-container">
+      <div class="empty">Chargement…</div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  Interface bâtie autour du moteur open-source
+  <a href="https://github.com/gosom/google-maps-scraper" target="_blank" rel="noopener">gosom/google-maps-scraper</a> (MIT) — aucune clé API requise.
+</footer>
+
+<div class="modal-backdrop" id="modal-backdrop">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="modal-title">Aperçu des résultats</h3>
+      <button id="modal-close" aria-label="Fermer">×</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
