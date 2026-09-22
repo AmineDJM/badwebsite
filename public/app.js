@@ -274,6 +274,54 @@ function renderAll(queueItems, engineJobs) {
     </table>`;
 }
 
+const proxyState = document.getElementById('proxy-state');
+const proxyBar = document.getElementById('proxy-bar');
+const proxyTestBtn = document.getElementById('proxy-test-btn');
+
+// A test result is more informative than the generic state, so the 4s poll
+// leaves it on screen for a while instead of immediately overwriting it.
+let proxyResultHoldUntil = 0;
+
+function renderProxyState(config) {
+  if (!config || Date.now() < proxyResultHoldUntil) return;
+  const n = config.proxiesConfigured;
+
+  if (n === 0) {
+    proxyBar.className = 'proxy-bar warn';
+    proxyState.innerHTML =
+      "<strong>Aucun proxy configuré</strong> — Google servira des pages vides. Ajoutez <code>DEFAULT_PROXIES</code> dans Render.";
+    return;
+  }
+
+  const bits = [`${n} proxy${n > 1 ? 'ies' : ''} configuré${n > 1 ? 's' : ''}`];
+  if (config.sessionRotation) bits.push('rotation par job active');
+  if (config.proxyListError) bits.push(`⚠ ${config.proxyListError}`);
+  if (config.bothProxySourcesSet) {
+    proxyBar.className = 'proxy-bar warn';
+    bits.push('⚠ DEFAULT_PROXIES et PROXY_LIST_URL sont tous les deux actifs — vos jobs alterneront entre les deux');
+  } else {
+    proxyBar.className = 'proxy-bar ok';
+  }
+  proxyState.textContent = 'Proxy : ' + bits.join(' · ');
+}
+
+proxyTestBtn.addEventListener('click', async () => {
+  proxyTestBtn.disabled = true;
+  proxyResultHoldUntil = Date.now() + 60_000;
+  proxyState.textContent = 'Test en cours… (jusqu’à 20 s)';
+  try {
+    const res = await fetch('/api/proxy/test', { method: 'POST' });
+    const data = await res.json();
+    proxyBar.className = 'proxy-bar ' + (data.ok ? 'ok' : 'warn');
+    proxyState.textContent = (data.ok ? '✓ ' : '✗ ') + data.message;
+  } catch (err) {
+    proxyBar.className = 'proxy-bar warn';
+    proxyState.textContent = `✗ test impossible : ${err.message}`;
+  } finally {
+    proxyTestBtn.disabled = false;
+  }
+});
+
 async function refresh() {
   let queueItems = [];
   let engineJobs = [];
@@ -284,6 +332,7 @@ async function refresh() {
     const data = await res.json();
     queueItems = data.items || [];
     renderAlert(data.breaker);
+    renderProxyState(data.config);
   } catch (err) {
     jobsContainer.innerHTML = `<div class="empty">Impossible de contacter le serveur (${escapeHtml(err.message)})</div>`;
     return;

@@ -251,6 +251,41 @@ table.jobs tr:hover td { background: var(--panel-2); }
 
 .right-col { display: flex; flex-direction: column; gap: 20px; }
 
+.proxy-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 11px 14px;
+  font-size: 13px;
+}
+.proxy-bar.ok { border-color: #1d5637; }
+.proxy-bar.ok .proxy-state { color: var(--ok); }
+.proxy-bar.warn { border-color: #6d2a30; }
+.proxy-bar.warn .proxy-state { color: var(--working); }
+.proxy-bar .proxy-state { flex: 1; }
+.proxy-bar code {
+  background: var(--panel-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.proxy-bar button {
+  flex-shrink: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 7px 12px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.proxy-bar button:hover:not(:disabled) { border-color: var(--brand); color: var(--brand-2); }
+.proxy-bar button:disabled { opacity: .5; cursor: default; }
+
 .alert {
   display: flex;
   align-items: flex-start;

@@ -20,6 +20,7 @@
 
 const http = require('http');
 const https = require('https');
+const tls = require('tls');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -582,6 +583,72 @@ function proxyPool() {
   return [...DEFAULT_PROXIES, ...fetchedProxies];
 }
 
+// Opens a real CONNECT tunnel through the proxy and asks what IP the far end
+// sees — the same path the scraper's browser will take. Lets the exit IP be
+// confirmed before committing a batch of jobs to it, instead of discovering a
+// broken proxy through empty results half an hour later.
+function testProxy(proxyUrl) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try {
+      u = new URL(proxyUrl);
+    } catch {
+      reject(new Error('URL de proxy illisible'));
+      return;
+    }
+    if (u.protocol.startsWith('socks')) {
+      reject(new Error("test non supporté pour les proxies socks5 (le proxy peut fonctionner malgré tout)"));
+      return;
+    }
+
+    const target = 'api.ipify.org';
+    const headers = { Host: `${target}:443` };
+    if (u.username) {
+      const creds = `${decodeURIComponent(u.username)}:${decodeURIComponent(u.password)}`;
+      headers['Proxy-Authorization'] = 'Basic ' + Buffer.from(creds).toString('base64');
+    }
+
+    const req = http.request({
+      host: u.hostname,
+      port: u.port || 80,
+      method: 'CONNECT',
+      path: `${target}:443`,
+      headers,
+      timeout: 20_000,
+    });
+
+    req.on('connect', (res, socket) => {
+      if (res.statusCode !== 200) {
+        socket.destroy();
+        reject(
+          new Error(
+            res.statusCode === 407
+              ? 'identifiants refusés par le proxy (407) — vérifiez user/mot de passe, et encodez les caractères spéciaux'
+              : `le proxy a répondu ${res.statusCode}`
+          )
+        );
+        return;
+      }
+      const tlsSock = tls.connect({ socket, servername: target }, () => {
+        tlsSock.write(`GET /?format=json HTTP/1.1\r\nHost: ${target}\r\nConnection: close\r\n\r\n`);
+      });
+      let data = '';
+      tlsSock.setTimeout(20_000, () => tlsSock.destroy(new Error('timeout')));
+      tlsSock.on('data', (c) => (data += c));
+      tlsSock.on('end', () => {
+        const ip = (data.match(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/) || [])[0];
+        if (ip) resolve(ip);
+        else reject(new Error('réponse inattendue du service de test'));
+      });
+      tlsSock.on('error', (err) => reject(new Error(`tunnel TLS impossible : ${err.message}`)));
+    });
+
+    req.on('timeout', () => req.destroy(new Error('délai dépassé (proxy injoignable ?)')));
+    req.on('error', (err) => reject(new Error(err.message)));
+    req.end();
+  });
+}
+
 // Handing the engine the whole list would be pointless: it binds one proxy per
 // browser for that browser's lifetime, so only the first entry or two would
 // ever be used. Instead we hand it exactly one, and walk the list ourselves —
@@ -719,8 +786,38 @@ async function handleQueueList(req, res) {
       jobDelaySeconds: JOB_DELAY_MS / 1000,
       proxiesConfigured: proxyPool().length,
       proxyListError,
+      // Both sources feed the same pool, so jobs would alternate between two
+      // different kinds of proxy — worth flagging rather than silently mixing.
+      bothProxySourcesSet: DEFAULT_PROXIES.length > 0 && fetchedProxies.length > 0,
+      sessionRotation: proxyPool().some((p) => p.includes('{session}')),
     },
   });
+}
+
+async function handleProxyTest(req, res) {
+  const pool = proxyPool();
+  if (pool.length === 0) {
+    return sendJSON(res, 200, {
+      ok: false,
+      configured: false,
+      message:
+        "Aucun proxy configuré. Ajoutez DEFAULT_PROXIES dans les variables d'environnement Render (voir README).",
+    });
+  }
+
+  const candidate = applySessionRotation([pool[0]])[0];
+  try {
+    const ip = await testProxy(candidate);
+    sendJSON(res, 200, {
+      ok: true,
+      configured: true,
+      ip,
+      poolSize: pool.length,
+      message: `Proxy fonctionnel — les requêtes sortent depuis l'IP ${ip}.`,
+    });
+  } catch (err) {
+    sendJSON(res, 200, { ok: false, configured: true, poolSize: pool.length, message: err.message });
+  }
 }
 
 async function handleQueueResume(req, res) {
@@ -900,6 +997,11 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/api/queue/resume') {
     if (req.method === 'POST') return void handleQueueResume(req, res);
+    return sendJSON(res, 405, { message: 'method not allowed' });
+  }
+
+  if (pathname === '/api/proxy/test') {
+    if (req.method === 'POST') return void handleProxyTest(req, res);
     return sendJSON(res, 405, { message: 'method not allowed' });
   }
 

@@ -9,6 +9,34 @@ télécharger les résultats en CSV.
 **Aucune clé API n'est nécessaire.** Le moteur scrape Google Maps via un
 Chromium headless (Playwright) — il n'appelle aucune API Google payante.
 
+## Démarrage en 4 étapes
+
+1. **Déployez** : Render → New → Blueprint → ce dépôt. Le `render.yaml` fait
+   le reste (premier build : 5-10 min).
+2. **Mot de passe** : Render → Environment → `ADMIN_PASSWORD`. Render en génère
+   un aléatoire ; notez-le ou remplacez-le. Il protège toute l'interface.
+3. **Proxy** (indispensable pour du volume) : Render → Environment →
+   **Add Environment Variable** → clé `DEFAULT_PROXIES`, valeur :
+   ```
+   http://VOTRE_USER-FR-{session}:VOTRE_PASS@p.webshare.io:80
+   ```
+   Gardez `{session}` tel quel : il est remplacé par une session neuve à chaque
+   job. Détails et réglages Webshare exacts dans la section "Proxies".
+   **N'utilisez pas `DEFAULT_PROXIES` et `PROXY_LIST_URL` en même temps** —
+   les deux alimentent le même pool et vos jobs alterneraient entre les deux.
+4. **Vérifiez avant de lancer** : ouvrez l'interface et cliquez
+   **« Tester le proxy »** en haut à droite. Le serveur ouvre un vrai tunnel
+   par votre proxy et affiche l'IP de sortie :
+   - `✓ Proxy fonctionnel — les requêtes sortent depuis l'IP …` → vous pouvez
+     lancer vos scrapes.
+   - `✗ identifiants refusés (407)` → user/mot de passe incorrects (pensez à
+     encoder les caractères spéciaux : `@` → `%40`).
+   - `Aucun proxy configuré` → l'étape 3 n'est pas prise en compte.
+
+Sans proxy valide, Google renvoie des pages vides : vous obtiendrez des jobs
+avec 0 résultat, ou des lignes sans nom ni téléphone. L'interface le détecte
+et met la file en pause, mais mieux vaut le vérifier avant.
+
 ## Comment ça marche
 
 Un seul conteneur Docker fait tourner deux processus :
