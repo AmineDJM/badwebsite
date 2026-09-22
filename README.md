@@ -248,6 +248,37 @@ L'**Endpoint Generator** du dashboard Webshare construit la chaîne exacte pour
 vous (pays, ville…) — prenez-la et remplacez juste l'ID de session par
 `{session}`.
 
+⚠️ **Gardez vos jobs sous 30 minutes.** Chez Webshare, une session sticky tient
+**30 min maximum**. La durée max par job est à 20 min par défaut dans le
+formulaire, ce qui passe largement. Si vous la montez au-delà de 30 min, l'IP
+changera en cours de job et vous perdrez la cohérence de session recherchée.
+Mieux vaut découper en plusieurs jobs plus courts (le mode « Plusieurs
+scrapers » est fait pour ça) que lancer un job très long.
+
+### Quelle offre Webshare acheter : Static ou Rotating Residential ?
+
+**Rotating Residential.** Le Static est pourtant 4× moins cher (20 IP dédiées
+à 6 $/mois, bande passante illimitée, contre ~27,50 $/mois pour 10 Go en
+Rotating), mais il ne convient pas ici.
+
+La raison tient au moteur : **il n'a aucune bascule automatique quand un proxy
+est bloqué**. Avec le Static, vous possédez 20 IP fixes et rien d'autre ; sous
+scraping quotidien, Google finit par identifier ces IP précises, et chaque IP
+grillée est une perte définitive de capacité — la file continuera de lui
+envoyer des jobs qui reviendront vides, et la seule issue sera de remplacer
+les IP à la main. Les IP « ISP » du Static sont en plus hébergées dans des
+plages datacenter connues (AT&T, Sprint, Cox) : elles tiennent plus longtemps
+que du datacenter pur, mais se dégradent en jours/semaines sous volume.
+
+Avec le Rotating, chaque job tire une IP fraîche dans un pool de 80 M : une IP
+grillée n'est jamais réutilisée, le problème ne s'accumule pas. C'est aussi le
+mode pour lequel le mécanisme `{session}` décrit plus haut est conçu — le
+Static ne connaît pas la notion de session (ses IP sont permanentes) et devrait
+passer par la liste téléchargeable (Option B).
+
+Budget de départ conseillé : **10 Go/mois**, qui couvre de l'ordre de 10 000
+fiches. Mesurez votre consommation réelle le premier mois avant d'ajuster.
+
 ### Ce que je recommande : Webshare
 
 [Webshare.io](https://www.webshare.io/) — le plus simple et le moins cher
