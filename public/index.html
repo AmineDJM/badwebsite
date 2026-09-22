@@ -101,11 +101,14 @@
         <label for="proxies">Proxies (optionnel)</label>
         <textarea id="proxies" placeholder="http://user:pass@host:port"></textarea>
         <div class="hint">
-          Idéalement <strong>une seule ligne</strong> : l'URL de passerelle rotative
-          de votre fournisseur (elle change d'IP automatiquement). Si le mot de
-          passe contient des caractères spéciaux (@ : / % ?), encodez-les
-          (%40, %3A…). Laissez vide pour utiliser la config par défaut du
-          serveur (<code>DEFAULT_PROXIES</code>), le cas échéant.
+          Idéalement <strong>une seule ligne</strong>, en session « sticky », avec
+          <code>{session}</code> à la place de l'identifiant de session :<br />
+          <code>http://user-FR-{session}:pass@p.webshare.io:80</code><br />
+          Une nouvelle IP sera utilisée à chaque job (et à chaque reprise), tout en
+          gardant la même pendant toute la durée d'un job. Si le mot de passe
+          contient des caractères spéciaux (@ : / % ?), encodez-les (%40, %3A…).
+          Laissez vide pour utiliser la config par défaut du serveur
+          (<code>DEFAULT_PROXIES</code>).
         </div>
       </details>
 

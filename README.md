@@ -211,6 +211,41 @@ Pour scraper Google Maps spécifiquement, un proxy **datacenter** classique
 trafic automatisé. Il faut des proxies **résidentiels rotatifs** (IP de
 particuliers, donc indiscernables d'un vrai visiteur).
 
+### Réglages Webshare exacts
+
+Dans le dashboard Webshare :
+
+| Réglage | À choisir | Pourquoi |
+|---|---|---|
+| **Authentication method** | **Username/Password** | L'option « IP Authorization » n'autorise qu'**une seule IP par compte** (au-delà, c'est une option payante), et l'IP de sortie de Render n'est ni dédiée ni garantie stable. Identifiants = ça marche partout, tout de suite. |
+| **Connection method** | **Backbone** (`p.webshare.io:80`) | Adresse stable, les IP changent dessous sans toucher à votre config. |
+| Rotation | **Session « sticky »**, via l'ID de session dans le nom d'utilisateur | Voir ci-dessous — surtout **pas** « Rotating Proxy Endpoint ». |
+
+**Pourquoi PAS « Rotating Proxy Endpoint » :** il change d'IP **à chaque
+requête**. Or une seule page Google Maps déclenche des dizaines de
+sous-requêtes (scripts, images, appels internes). Elles sortiraient chacune
+depuis une IP différente — un comportement qu'aucun vrai visiteur ne produit,
+et qui casse les cookies/la session en cours de route. C'est *pire* que pas de
+rotation du tout pour un scraper qui pilote un navigateur.
+
+**Le bon réglage — une IP par job :** collez une URL en session sticky en
+remplaçant l'identifiant de session par `{session}` :
+
+```
+http://VOTRE_USER-FR-{session}:VOTRE_PASS@p.webshare.io:80
+```
+
+Le serveur remplace `{session}` par un identifiant aléatoire **à chaque
+lancement de job** (et à chaque reprise après échec — c'est précisément le
+moment où l'IP précédente venait d'être bloquée). Résultat : une IP stable et
+cohérente pendant toute la durée d'un job, une IP différente d'un job à
+l'autre. Sans le placeholder, l'URL est utilisée telle quelle (une seule IP
+pour tout, qui finira par griller).
+
+L'**Endpoint Generator** du dashboard Webshare construit la chaîne exacte pour
+vous (pays, ville…) — prenez-la et remplacez juste l'ID de session par
+`{session}`.
+
 ### Ce que je recommande : Webshare
 
 [Webshare.io](https://www.webshare.io/) — le plus simple et le moins cher
@@ -237,28 +272,25 @@ en place pour un usage comme le vôtre.)
 - **Au cas par cas** : champ "Proxies" dans les options avancées du
   formulaire, pour un job donné (prioritaire sur `DEFAULT_PROXIES`).
 
-Dans les deux cas, **collez une seule ligne** : l'URL de passerelle rotative
-donnée par votre fournisseur (voir ci-dessus). Protocoles supportés par le
-moteur : `http`, `https`, `socks5`, `socks5h`. Si le mot de passe contient un
-caractère spécial (`@ : / % ?`), encodez-le (ex. `@` → `%40`) sinon l'URL ne
-sera pas lue correctement.
+Dans les deux cas, **collez une seule ligne** au format sticky décrit
+ci-dessus. Protocoles supportés par le moteur : `http`, `https`, `socks5`,
+`socks5h`. Si le mot de passe contient un caractère spécial (`@ : / % ?`),
+encodez-le (ex. `@` → `%40`) sinon l'URL ne sera pas lue correctement.
 
-### Pourquoi une seule URL de passerelle plutôt qu'une liste d'IP
+### Pourquoi une seule URL plutôt qu'une liste d'IP
 
 Techniquement, le moteur attribue **un proxy par navigateur Chromium, pour
 toute la durée de vie de ce navigateur** (pas de rotation en cours de job, et
 **pas de bascule automatique** si un proxy se fait bloquer — ce point n'est
 pas implémenté côté moteur upstream). Si vous collez une liste de 10 IP
-statiques, seules les 1-2 premières seront réellement utilisées à moins
-d'augmenter aussi `SCRAPER_BROWSER_POOL_SIZE` (variable d'environnement,
-voir `render.yaml`) pour qu'il y ait un navigateur — et donc un proxy — par
-IP de la liste.
+statiques, seules les 1-2 premières seront réellement utilisées, à moins
+d'augmenter aussi `SCRAPER_BROWSER_POOL_SIZE` (voir `render.yaml`) pour qu'il
+y ait un navigateur — donc un proxy — par IP de la liste.
 
-Une **passerelle rotative** (le mode recommandé ci-dessus) évite complètement
-ce problème : le changement d'IP se fait automatiquement côté fournisseur, à
-chaque connexion, même si le moteur ne "voit" qu'une seule URL de proxy. Pour
-un non-développeur, c'est la configuration la plus simple ET la plus
-efficace — pas besoin de toucher à `SCRAPER_BROWSER_POOL_SIZE`.
+L'URL sticky unique avec `{session}` évite complètement ce problème : la
+rotation est pilotée par cette interface, au bon rythme (un job = une IP), sans
+dépendre d'une fonctionnalité que le moteur n'a pas. Pas besoin de toucher à
+`SCRAPER_BROWSER_POOL_SIZE`.
 
 ## Développement local
 

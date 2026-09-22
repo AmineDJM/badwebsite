@@ -33,12 +33,14 @@ services:
                     # above. Jobs themselves still run one at a time (see the FIFO
                     # queue in server.js) — this only affects how fast each one goes.
       - key: DEFAULT_PROXIES
-        sync: false # optional. Leave empty to run without proxies (works fine for
-                     # light/occasional use). For heavy/daily scraping, set this in
-                     # the dashboard — see README "Proxies" section for a
-                     # recommended provider. Best used as ONE rotating-gateway URL
-                     # (protocol://user:pass@host:port); every job that doesn't
-                     # specify its own proxies uses this automatically.
+        sync: false # optional. Leave empty to run without proxies (fine for light
+                     # use). For heavy/daily scraping set it here — see README
+                     # "Proxies". Use ONE sticky-session URL with a {session}
+                     # placeholder, e.g.
+                     #   http://user-FR-{session}:pass@p.webshare.io:80
+                     # {session} is replaced with a fresh id on every dispatch:
+                     # one stable IP per job, a new one between jobs. Every job
+                     # that doesn't specify its own proxies uses this.
       - key: JOB_MAX_ATTEMPTS
         value: "3" # a job that comes back with 0 results is retried this many
                     # times before being marked failed

@@ -483,11 +483,25 @@ async function resolveCurrent(item) {
   persistQueue();
 }
 
+// Browser scraping wants ONE stable exit IP per session (a page load fires
+// dozens of subrequests; having each leave from a different IP is not a
+// pattern a real visitor produces), but reusing the same IP for every job
+// burns it. Providers expose sticky sessions via an ID in the proxy username,
+// so a `{session}` placeholder in the URL is swapped for a fresh token on each
+// dispatch: coherent within a job, a new IP between jobs — including between
+// retries, which is exactly when the previous IP was likely blocked.
+function applySessionRotation(proxies) {
+  if (!proxies || proxies.length === 0) return proxies;
+  const token = crypto.randomBytes(4).toString('hex');
+  return proxies.map((p) => p.replace(/\{session\}/g, token));
+}
+
 async function submitNext(item) {
   const payload = { ...item.payload };
   if ((!payload.proxies || payload.proxies.length === 0) && DEFAULT_PROXIES.length > 0) {
     payload.proxies = DEFAULT_PROXIES;
   }
+  payload.proxies = applySessionRotation(payload.proxies);
 
   item.attempts = (item.attempts || 0) + 1;
   try {
