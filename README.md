@@ -28,15 +28,29 @@ Un seul conteneur Docker fait tourner deux processus :
 navigateur → server.js (auth + UI + proxy) → google-maps-scraper -web (127.0.0.1:8081)
 ```
 
-### Limite importante : exécution en série
+### Exécution en série, dans l'ordre
 
-Le moteur upstream permet de **créer** plusieurs jobs en parallèle depuis
-l'interface (chacun suivi indépendamment : en attente → en cours → terminé),
-mais il n'exécute qu'**un seul job à la fois** — les autres restent en
-attente et démarrent automatiquement l'un après l'autre. C'est un choix du
-projet upstream (`runner/webrunner`), pas une limitation de cette interface.
-Pour du vrai parallélisme, il faudrait déployer plusieurs instances du
-service (chacune avec son propre disque/port).
+Le moteur upstream n'exécute **qu'un seul job à la fois** (c'est un choix du
+projet `gosom/google-maps-scraper`, pas une limitation ajoutée ici). Mais il
+choisit le prochain job en attente par `created_at DESC` — c'est-à-dire le
+**dernier créé en premier** (LIFO), pas l'ordre dans lequel vous les avez
+soumis.
+
+Pour que "plusieurs scrapers lancés en série" respecte réellement l'ordre
+affiché à l'écran, cette interface ajoute son propre **dispatcheur FIFO**
+(`server/server.js`) : chaque job que vous lancez (mode "Un scraper" ou
+"Plusieurs scrapers") est d'abord mis dans une file d'attente interne,
+persistée sur le disque (`$DATA_FOLDER/queue.json`, survit aux redémarrages).
+Toutes les 3 secondes, le serveur regarde s'il y a déjà un job en cours dans
+le moteur ; si non, il envoie le suivant de la file — un seul à la fois,
+strictement dans l'ordre de soumission. La file d'attente (jobs pas encore
+envoyés au moteur) s'affiche dans le panneau **"File d'attente"**, avec leur
+position ; une fois envoyé, le job apparaît normalement dans le tableau
+**"Jobs"** avec son statut réel (en cours / terminé / échoué).
+
+Pour du vrai parallélisme (plusieurs jobs en même temps, pas juste en série),
+il faudrait déployer plusieurs instances du service (chacune avec son propre
+disque/port) — l'engin lui-même ne le permet pas dans un seul processus.
 
 ## Utilisation
 
@@ -78,9 +92,27 @@ légers mais risque l'OOM sur des jobs plus lourds — ajustez `plan:` dans
 | Variable | Rôle | Défaut |
 |---|---|---|
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Authentification Basic Auth de l'interface | générés par `render.yaml` |
-| `DATA_FOLDER` | Dossier de stockage (jobs.db + CSV) | `/data` |
+| `DATA_FOLDER` | Dossier de stockage (jobs.db + CSV + queue.json) | `/data` |
 | `SCRAPER_INTERNAL_PORT` | Port interne du moteur (ne pas exposer) | `8081` |
 | `PORT` | Port public (fourni automatiquement par Render) | `3000` en local |
+| `DEFAULT_PROXIES` | Optionnel — proxies appliqués par défaut à tout job qui n'en spécifie pas (liste séparée par virgules ou retours à la ligne) | vide (aucun proxy) |
+
+## Ai-je besoin de proxies ?
+
+**Non, pas pour démarrer.** Le déploiement fonctionne tel quel sur Render,
+sans aucune clé API ni proxy. Pour un usage léger à modéré (quelques jobs par
+jour, profondeur raisonnable), l'IP du service suffit.
+
+Les proxies deviennent utiles si vous scrapez **beaucoup, souvent, ou avec
+beaucoup de mots-clés d'affilée** : Google peut alors limiter ou bloquer
+temporairement l'IP qui fait toutes ces requêtes. Deux façons d'en ajouter
+si besoin, sans rien redéployer :
+- Globalement pour tous les jobs : variable d'environnement `DEFAULT_PROXIES`
+  (dashboard Render → Environment).
+- Au cas par cas : champ "Proxies" dans les options avancées du formulaire,
+  pour un job donné.
+
+Protocoles supportés par le moteur : `http`, `https`, `socks5`, `socks5h`.
 
 ## Développement local
 

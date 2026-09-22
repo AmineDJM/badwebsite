@@ -1,6 +1,7 @@
 'use strict';
 
 const API_BASE = '/api/v1/jobs';
+const QUEUE_BASE = '/api/queue';
 const POLL_MS = 4000;
 const PREVIEW_ROWS = 50;
 const HIGHLIGHT_COLS = new Set(['website', 'emails', 'phone']);
@@ -27,7 +28,7 @@ function setMode(next) {
     keywordsInput.placeholder = 'restaurants paris\ncoiffeurs lyon\nplombiers marseille';
   } else {
     keywordsLabel.textContent = 'Recherches (une par ligne = un scraper)';
-    keywordsHint.innerHTML = 'Chaque ligne devient <strong>son propre job</strong>, lancé automatiquement à la suite des autres.';
+    keywordsHint.innerHTML = 'Chaque ligne devient <strong>son propre job</strong>, mis en file d\'attente et lancé automatiquement, <strong>dans l\'ordre indiqué</strong>, un seul à la fois.';
     keywordsInput.placeholder = 'restaurants paris\ncoiffeurs lyon\nplombiers marseille';
   }
 }
@@ -76,18 +77,17 @@ function buildBaseJobData() {
   };
 }
 
-async function createJob(name, keywords, base) {
-  const payload = { name, keywords, ...base };
-  const res = await fetch(API_BASE, {
+async function submitQueueItems(items) {
+  const res = await fetch(QUEUE_BASE, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ items }),
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(body.message || `HTTP ${res.status}`);
   }
-  return body; // { id }
+  return body; // { created: [{id, name}, ...] }
 }
 
 form.addEventListener('submit', async (ev) => {
@@ -114,23 +114,20 @@ form.addEventListener('submit', async (ev) => {
   statusLog.innerHTML = '';
 
   try {
+    let items;
     if (mode === 'single') {
-      logLine(`→ création du job "${name}" (${lines.length} recherche${lines.length > 1 ? 's' : ''})…`);
-      const created = await createJob(name, lines, base);
-      logLine(`✓ job lancé: ${name} (${created.id})`, 'ok');
+      items = [{ name, keywords: lines, ...base }];
+      logLine(`→ mise en file d'attente du job "${name}" (${lines.length} recherche${lines.length > 1 ? 's' : ''})…`);
     } else {
-      logLine(`→ création de ${lines.length} jobs distincts…`);
-      for (let i = 0; i < lines.length; i++) {
-        const jobName = `${name} — ${lines[i]}`;
-        try {
-          const created = await createJob(jobName, [lines[i]], base);
-          logLine(`✓ (${i + 1}/${lines.length}) ${jobName} (${created.id})`, 'ok');
-        } catch (err) {
-          logLine(`✗ (${i + 1}/${lines.length}) ${jobName}: ${err.message}`, 'err');
-        }
-      }
-      logLine('terminé — les jobs seront exécutés automatiquement les uns après les autres.', 'ok');
+      items = lines.map((line) => ({ name: `${name} — ${line}`, keywords: [line], ...base }));
+      logLine(`→ mise en file d'attente de ${lines.length} jobs, dans cet ordre…`);
     }
+
+    const result = await submitQueueItems(items);
+    (result.created || []).forEach((c, i) => logLine(`✓ (${i + 1}/${items.length}) en file: ${c.name}`, 'ok'));
+    logLine("terminé — les jobs s'exécuteront automatiquement un par un, dans l'ordre.", 'ok');
+
+    fetchQueue();
     fetchJobs();
   } catch (err) {
     logLine(`✗ ${err.message}`, 'err');
@@ -226,6 +223,52 @@ jobsContainer.addEventListener('click', async (ev) => {
   } else if (action === 'preview') {
     openPreview(id, name);
   }
+});
+
+// ---------- waiting queue (not yet submitted to the engine) ----------
+
+const queuePanel = document.getElementById('queue-panel');
+const queueContainer = document.getElementById('queue-container');
+
+function renderQueue(items) {
+  const waiting = (items || []).filter((it) => it.status === 'queued');
+
+  if (waiting.length === 0) {
+    queuePanel.style.display = 'none';
+    return;
+  }
+  queuePanel.style.display = '';
+
+  const rows = waiting
+    .map(
+      (it) => `<div class="queue-row">
+        <span class="pos">${it.queuePosition}</span>
+        <span class="name">${escapeHtml(it.name)}</span>
+        <span class="kw">${escapeHtml((it.keywords || []).join(', '))}</span>
+        <button data-queue-action="cancel" data-id="${it.id}">Retirer</button>
+      </div>`
+    )
+    .join('');
+
+  queueContainer.innerHTML = `<div class="queue-list">${rows}</div>`;
+}
+
+async function fetchQueue() {
+  try {
+    const res = await fetch(QUEUE_BASE);
+    if (res.status === 401) return;
+    const items = await res.json();
+    renderQueue(Array.isArray(items) ? items : []);
+  } catch {
+    // silently ignore — the main jobs panel already surfaces connectivity errors
+  }
+}
+
+queueContainer.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-queue-action="cancel"]');
+  if (!btn) return;
+  await fetch(`${QUEUE_BASE}/${btn.dataset.id}`, { method: 'DELETE' });
+  fetchQueue();
 });
 
 // ---------- CSV preview modal ----------
@@ -326,4 +369,8 @@ async function openPreview(id, name) {
 
 setMode('single');
 fetchJobs();
-pollTimer = setInterval(fetchJobs, POLL_MS);
+fetchQueue();
+pollTimer = setInterval(() => {
+  fetchJobs();
+  fetchQueue();
+}, POLL_MS);

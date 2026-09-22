@@ -26,3 +26,10 @@ services:
         value: /data
       - key: SCRAPER_INTERNAL_PORT
         value: "8081"
+      - key: DEFAULT_PROXIES
+        sync: false # optional. Leave empty to run without proxies (works fine for
+                     # light/moderate use). If Google starts rate-limiting/blocking
+                     # your Render IP, set this in the dashboard to a comma- or
+                     # newline-separated list of proxy URLs
+                     # (protocol://user:pass@host:port) and every job that doesn't
+                     # specify its own proxies will use these automatically.
