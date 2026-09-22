@@ -33,7 +33,7 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const DATA_FOLDER = process.env.DATA_FOLDER || '/data';
 const QUEUE_FILE = path.join(DATA_FOLDER, 'queue.json');
 const DISPATCH_INTERVAL_MS = 3000;
-const MAX_ITEMS_PER_REQUEST = 200;
+const MAX_ITEMS_PER_REQUEST = 600; // a 7x7 grid across several keywords adds up fast
 
 function intEnv(name, fallback, min) {
   const parsed = parseInt(process.env[name], 10);
@@ -816,6 +816,81 @@ async function handleQueueList(req, res) {
   });
 }
 
+// Google stops feeding the results list after the first batch (~20 per search),
+// so volume comes from running many searches over a grid of points. That leaves
+// one CSV per job, which is not a usable deliverable — this merges them and
+// drops the overlaps the grid inevitably produces.
+async function handleMergedExport(req, res) {
+  const done = queue.filter((q) => q.engineJobId && (q.status === 'ok' || q.status === 'failed'));
+  if (done.length === 0) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Aucun résultat à exporter pour le moment.');
+    return;
+  }
+
+  let header = null;
+  const seen = new Set();
+  const merged = [];
+
+  for (const item of done) {
+    let text;
+    try {
+      text = await engineDownloadCsv(item.engineJobId);
+    } catch {
+      continue; // a missing file shouldn't sink the whole export
+    }
+    const rows = parseCsv(text);
+    if (rows.length < 2) continue;
+    if (!header) header = rows[0];
+
+    const idIdx = rows[0].indexOf('place_id');
+    const linkIdx = rows[0].indexOf('link');
+    for (const row of rows.slice(1)) {
+      if (row.length < 2) continue;
+      const key = (idIdx !== -1 && row[idIdx]) || (linkIdx !== -1 && row[linkIdx]) || row.join('|');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(row);
+    }
+  }
+
+  if (!header) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Aucun résultat exploitable à exporter.');
+    return;
+  }
+
+  const escape = (v) => (/[",\n\r]/.test(v) ? `"${String(v).replace(/"/g, '""')}"` : v);
+  const body = [header, ...merged].map((r) => r.map((c) => escape(c ?? '')).join(',')).join('\n');
+
+  res.writeHead(200, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename=resultats-fusionnes-${merged.length}.csv`,
+  });
+  res.end(body);
+}
+
+function engineDownloadCsv(id) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: SCRAPER_HOST, port: SCRAPER_PORT, path: `/api/v1/jobs/${id}/download`, method: 'GET' },
+      (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        let raw = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => (raw += c));
+        res.on('end', () => resolve(raw));
+      }
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 async function handleProxyTest(req, res) {
   const pool = proxyPool();
   if (pool.length === 0) {
@@ -1028,6 +1103,11 @@ const server = http.createServer((req, res) => {
 
   if (pathname === '/api/proxy/test') {
     if (req.method === 'POST') return void handleProxyTest(req, res);
+    return sendJSON(res, 405, { message: 'method not allowed' });
+  }
+
+  if (pathname === '/api/export/merged') {
+    if (req.method === 'GET') return void handleMergedExport(req, res);
     return sendJSON(res, 405, { message: 'method not allowed' });
   }
 

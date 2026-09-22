@@ -226,6 +226,44 @@ scraper Google Maps ne peut l'être. Mais vous ne travaillerez jamais à
 l'aveugle : tout échec est détecté, signalé et, quand c'est utile, réessayé
 automatiquement.**
 
+## Obtenir beaucoup de résultats (limite des ~20 par recherche)
+
+**Google ne renvoie qu'environ 20 résultats par recherche**, quelle que soit la
+profondeur demandée. Vérifié empiriquement : « ristorante » à Milan — une des
+catégories les plus denses qui soient — donne 20 résultats en profondeur 5
+comme en profondeur 20. Le moteur fait défiler la liste, attend 2 secondes, et
+s'arrête dès qu'elle ne grandit plus ; ce délai est codé en dur.
+
+**Deux conséquences pratiques :**
+
+1. **Toujours définir une zone de recherche.** Sans coordonnées, le moteur
+   construit une URL Google Maps *sans ancrage géographique* : la page ne
+   contient même pas de liste de résultats, le défilement échoue et vous
+   récupérez une poignée de fiches dispersées dans le monde entier (des
+   agences à Milan et des architectes au Kansas dans le même fichier). Mesuré :
+   **0 résultat sans ancrage, 20 avec**.
+2. **Multiplier les points de recherche.** Pour dépasser 20, il faut répéter la
+   recherche à différents endroits. Le champ **Couverture** le fait pour vous :
+   il répète automatiquement la recherche sur un quadrillage (3×3, 5×5 ou 7×7)
+   autour de la zone choisie, avec l'espacement de votre choix.
+
+| Couverture | Jobs créés | Résultats attendus |
+|---|---|---|
+| 1 point | 1 | ~20 |
+| 3 × 3 | 9 | ~180 |
+| 5 × 5 | 25 | ~500 |
+| 7 × 7 | 49 | ~980 |
+
+Les jobs s'exécutent un par un (~2-3 min chacun), l'estimation de durée est
+affichée avant le lancement. L'espacement dépend de la densité : 1-2 km en
+centre-ville, 5-10 km en zone rurale.
+
+**Récupérer le tout en un fichier :** le bouton **« Télécharger tout
+(fusionné, sans doublons) »** au-dessus de la liste des jobs assemble les
+résultats de tous les jobs terminés en un seul CSV, en supprimant les
+doublons (par `place_id`) que le quadrillage produit forcément sur les zones
+qui se chevauchent.
+
 ## Économiser de la bande passante proxy
 
 Si vous payez au Go, voici ce qui consomme et ce que vous pouvez couper.
