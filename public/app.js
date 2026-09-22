@@ -338,8 +338,11 @@ function renderProxyState(config) {
 
   if (n === 0) {
     proxyBar.className = 'proxy-bar warn';
-    proxyState.innerHTML =
-      "<strong>Aucun proxy configuré</strong> — Google servira des pages vides. Ajoutez <code>DEFAULT_PROXIES</code> dans Render.";
+    const rejected = config.rejectedProxies || [];
+    proxyState.innerHTML = rejected.length
+      ? `<strong>Proxy refusé — format non reconnu</strong> : <code>${escapeHtml(rejected.join(', '))}</code>. ` +
+        'Attendu : <code>http://user:motdepasse@hôte:port</code>. Cliquez sur « Tester le proxy » pour le détail.'
+      : "<strong>Aucun proxy configuré</strong> — Google servira des pages vides. Ajoutez <code>DEFAULT_PROXIES</code> dans Render.";
     return;
   }
 

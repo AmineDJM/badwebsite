@@ -50,19 +50,53 @@ const ZOMBIE_SLACK_MS = intEnv('ZOMBIE_SLACK_MINUTES', 5, 0) * 60_000;
 
 const PROXY_URL_RE = /^(https?|socks5h?):\/\/(?:[^:@/]+:[^@/]+@)?[^\s:@/]+:\d{1,5}\/?$/i;
 
+// Providers hand out proxies in several shapes; normalise them all to a URL so
+// that every source gets the same treatment. Dashboards commonly give
+// "host:port:user:pass" or a bare "user:pass@host:port" with no scheme, and
+// rejecting those looks to the user exactly like having configured nothing.
+function normalizeProxy(line) {
+  const s = String(line).trim();
+  if (!s || s.startsWith('#')) return null;
+
+  let out;
+  if (/^(https?|socks5h?):\/\//i.test(s)) {
+    out = s;
+  } else if (s.includes('@')) {
+    out = `http://${s}`;
+  } else {
+    const parts = s.split(':');
+    if (parts.length === 4) {
+      // Webshare's list format: host:port:username:password
+      const [host, port, user, pass] = parts;
+      out = `http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`;
+    } else if (parts.length === 2) {
+      out = `http://${s}`;
+    } else {
+      return null;
+    }
+  }
+
+  // Default to the usual HTTP proxy port when one wasn't given.
+  if (!/:\d{1,5}\/?$/.test(out)) out = out.replace(/\/$/, '') + ':80';
+  return out;
+}
+
+function redactProxy(p) {
+  return String(p).replace(/\/\/[^@]+@/, '//***@');
+}
+
 // Validates "protocol://[user:pass@]host:port" without ever logging the
 // credentials themselves (only the redacted host:port survives in logs).
 function validateProxies(list, sourceLabel) {
   const valid = [];
   const invalid = [];
   for (const raw of list) {
-    const p = String(raw).trim();
-    if (!p) continue;
-    if (PROXY_URL_RE.test(p)) {
-      valid.push(p);
+    if (!String(raw).trim()) continue;
+    const normalized = normalizeProxy(raw);
+    if (normalized && PROXY_URL_RE.test(normalized)) {
+      valid.push(normalized);
     } else {
-      const redacted = p.replace(/:\/\/[^@]+@/, '://***@');
-      invalid.push(redacted);
+      invalid.push(redactProxy(raw));
     }
   }
   if (invalid.length > 0) {
@@ -74,10 +108,14 @@ function validateProxies(list, sourceLabel) {
   return { valid, invalid };
 }
 
-const DEFAULT_PROXIES = validateProxies(
+const defaultProxyCheck = validateProxies(
   (process.env.DEFAULT_PROXIES || '').split(/[\n,]/),
   'DEFAULT_PROXIES'
-).valid;
+);
+const DEFAULT_PROXIES = defaultProxyCheck.valid;
+// Kept so the UI can say "configured but rejected" instead of "not configured",
+// which sends people hunting for a missing setting that is actually present.
+const DEFAULT_PROXIES_REJECTED = defaultProxyCheck.invalid;
 
 // A provider's "proxy list" download link. Its contents change over time
 // (proxies get replaced), so it's refetched periodically rather than pasted.
@@ -85,22 +123,6 @@ const DEFAULT_PROXIES = validateProxies(
 const PROXY_LIST_URL = (process.env.PROXY_LIST_URL || '').trim();
 const PROXY_LIST_REFRESH_MS = intEnv('PROXY_LIST_REFRESH_MINUTES', 30, 1) * 60_000;
 
-// Providers hand out lists in several shapes; normalise them all to a URL.
-function parseProxyLine(line) {
-  const s = String(line).trim();
-  if (!s || s.startsWith('#')) return null;
-  if (/^(https?|socks5h?):\/\//i.test(s)) return s;
-  if (s.includes('@')) return `http://${s}`;
-
-  const parts = s.split(':');
-  if (parts.length === 4) {
-    // Webshare's download format: host:port:username:password
-    const [host, port, user, pass] = parts;
-    return `http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`;
-  }
-  if (parts.length === 2) return `http://${s}`;
-  return null;
-}
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
@@ -154,8 +176,7 @@ async function refreshProxyList() {
   if (!PROXY_LIST_URL) return;
   try {
     const raw = await fetchProxyList();
-    const urls = raw.split('\n').map(parseProxyLine).filter(Boolean);
-    const { valid } = validateProxies(urls, 'PROXY_LIST_URL');
+    const { valid } = validateProxies(raw.split('\n'), 'PROXY_LIST_URL');
     if (valid.length === 0) {
       // Keep the previous list rather than silently losing all proxies.
       proxyListError = 'la liste téléchargée ne contient aucun proxy exploitable';
@@ -790,6 +811,7 @@ async function handleQueueList(req, res) {
       // different kinds of proxy — worth flagging rather than silently mixing.
       bothProxySourcesSet: DEFAULT_PROXIES.length > 0 && fetchedProxies.length > 0,
       sessionRotation: proxyPool().some((p) => p.includes('{session}')),
+      rejectedProxies: DEFAULT_PROXIES_REJECTED,
     },
   });
 }
@@ -797,11 +819,15 @@ async function handleQueueList(req, res) {
 async function handleProxyTest(req, res) {
   const pool = proxyPool();
   if (pool.length === 0) {
+    const rejected = DEFAULT_PROXIES_REJECTED;
     return sendJSON(res, 200, {
       ok: false,
       configured: false,
-      message:
-        "Aucun proxy configuré. Ajoutez DEFAULT_PROXIES dans les variables d'environnement Render (voir README).",
+      message: rejected.length
+        ? `DEFAULT_PROXIES est bien défini mais sa valeur a été refusée : ${rejected.join(', ')}. ` +
+          `Attendu : protocole://user:mot_de_passe@hôte:port (ex. http://user-FR-{session}:pass@p.webshare.io:80). ` +
+          `Si le mot de passe contient @ : / % ?, encodez-les (@ → %40).`
+        : "Aucun proxy configuré. Ajoutez DEFAULT_PROXIES dans les variables d'environnement Render (voir README).",
     });
   }
 
