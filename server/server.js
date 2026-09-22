@@ -449,9 +449,12 @@ function registerFailure(label) {
   console.warn(`[breaker] failure ${breaker.consecutiveFailures}/${BLOCK_PAUSE_THRESHOLD} (${label})`);
   if (breaker.consecutiveFailures >= BLOCK_PAUSE_THRESHOLD) {
     forcePause(
-      `${breaker.consecutiveFailures} jobs consécutifs sans résultat exploitable — ` +
-        `blocage Google probable (proxy épuisé/absent). File mise en pause pour ne pas ` +
-        `brûler le reste de vos recherches pour rien.`
+      `${breaker.consecutiveFailures} jobs consécutifs sans résultat exploitable. ` +
+        `Cause la plus fréquente : Google sert des pages dégradées parce que l'IP utilisée est ` +
+        `repérée — vérifiez qu'un proxy résidentiel est bien configuré et fonctionne. ` +
+        `Si le problème persiste avec un bon proxy, c'est que Google a modifié la structure de ses ` +
+        `pages et que le moteur doit être mis à jour. File mise en pause pour ne pas brûler le ` +
+        `reste de vos recherches.`
     );
   }
 }
@@ -537,15 +540,15 @@ async function resolveCurrent(item) {
   const layoutBroken = quality && quality.sampleSize >= 5 && quality.blankTitleRatio > 0.5;
 
   if (layoutBroken) {
-    // Retrying cannot fix an extraction mismatch, so fail fast and stop the
-    // queue rather than filling CSVs with blank rows.
-    item.status = 'failed';
-    item.nextAttemptAt = null;
-    item.error = `données illisibles : ${Math.round(quality.blankTitleRatio * 100)}% des lignes sans nom d'établissement`;
-    forcePause(
-      `Les résultats reviennent vides de leur contenu (${Math.round(quality.blankTitleRatio * 100)}% des lignes sans nom). ` +
-        `Google a probablement modifié la structure de ses pages : le moteur de scraping doit être mis à jour ` +
-        `(nouvelle version de gosom/google-maps-scraper). File mise en pause.`
+    // Rows written but stripped of their content. Two very different causes:
+    // Google served a degraded/consent page (a fresh IP fixes it), or it moved
+    // the data structure the engine indexes into (nothing fixes it here). Since
+    // we can't tell them apart from the output, retry on a new proxy session —
+    // if it's structural, the attempts exhaust and the breaker pauses anyway.
+    scheduleRetryOrFail(
+      item,
+      `données vides : ${Math.round(quality.blankTitleRatio * 100)}% des lignes sans nom d'établissement ` +
+        `(page dégradée par Google, ou structure de page modifiée)`
     );
   } else if (!engineFailed && !emptyResult) {
     item.status = 'ok';
