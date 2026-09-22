@@ -8,8 +8,11 @@
 #
 # Upstream project: https://github.com/gosom/google-maps-scraper (MIT)
 
-ARG GO_VERSION=1.23
-ARG SCRAPER_REF=master
+# Matches the Go version the upstream go.mod requires. Note that Debian-trixie
+# golang images only exist from 1.24 up — older tags like 1.23-trixie do not
+# exist and the build fails at image pull.
+ARG GO_VERSION=1.27.1
+ARG SCRAPER_REF=main
 
 # ---------------------------------------------------------------------------
 # Stage: build the scraper binary + fetch its headless Chromium
@@ -23,13 +26,20 @@ RUN git clone --depth 1 --branch "${SCRAPER_REF}" \
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/browsers
 ENV PLAYWRIGHT_DRIVER_PATH=/opt/ms-playwright-go
-# GOTOOLCHAIN=auto (Go's default) lets `go build`/`go run` fetch whatever
-# toolchain version go.mod requires, even if it's newer than this image's Go.
+# GOTOOLCHAIN=auto (Go's default) lets the build fetch whatever toolchain
+# go.mod requires, so a version bump upstream doesn't break this image.
 RUN go mod download
 
-# Installs the Chromium build Playwright needs, plus its OS-level deps,
-# using the exact playwright-go version pinned in the cloned repo's go.sum.
-RUN go run github.com/mxschmitt/playwright-go/cmd/playwright install chromium --with-deps
+# Install the Chromium build Playwright needs, plus its OS-level deps. The
+# playwright CLI version is read from the cloned repo's own go.mod so it can
+# never drift from the version the compiled binary drives the browser with.
+# `go install pkg@version` resolves its own dependencies independently, which
+# `go run pkg` would not: the main module's go.sum lacks entries for the CLI's
+# own deps.
+RUN PW_VERSION="$(go list -m -f '{{.Version}}' github.com/mxschmitt/playwright-go)" \
+    && echo "playwright-go: ${PW_VERSION}" \
+    && go install "github.com/mxschmitt/playwright-go/cmd/playwright@${PW_VERSION}" \
+    && playwright install chromium --with-deps
 
 RUN CGO_ENABLED=0 go build -ldflags="-w -s" -o /usr/bin/google-maps-scraper .
 
